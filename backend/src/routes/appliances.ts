@@ -4,8 +4,39 @@ import { appliances, parts } from "../db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { validateBody, createApplianceSchema, updateApplianceSchema, addPartSchema } from "../middleware/validate.js";
 import { addPart } from "../services/inventory.js";
+import { extractApplianceInfo } from "../services/ocr.js";
 
 const router = Router();
+
+// POST /api/appliances/ocr — extract model/serial from sticker photo
+// MUST be before /:id routes so Express doesn't parse "ocr" as an ID
+router.post("/ocr", async (req, res) => {
+  const { image } = req.body as { image?: unknown };
+
+  if (typeof image !== "string") {
+    res.status(400).json({ error: "image must be a base64 string" });
+    return;
+  }
+
+  // ~10MB base64 is roughly 13.6MB raw; enforce 10MB on the string length
+  if (image.length > 10 * 1024 * 1024) {
+    res.status(400).json({ error: "image exceeds 10MB limit" });
+    return;
+  }
+
+  try {
+    const result = await extractApplianceInfo(image);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === "not configured") {
+      res.status(503).json({ error: "OCR service not configured" });
+      return;
+    }
+    console.error("OCR error:", err);
+    res.status(500).json({ error: "OCR failed" });
+  }
+});
 
 // GET /api/appliances — list all, newest first
 router.get("/", async (req, res) => {
