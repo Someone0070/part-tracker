@@ -187,6 +187,7 @@ function partToJson(p: typeof parts.$inferSelect) {
     listedQuantity: p.listedQuantity,
     available: p.quantity - p.listedQuantity,
     ebayListingId: p.ebayListingId,
+    applianceId: p.applianceId,
     createdAt: p.createdAt.toISOString(),
     updatedAt: p.updatedAt.toISOString(),
   };
