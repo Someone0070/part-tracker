@@ -3,6 +3,7 @@ import { Icon } from "./Icon";
 
 const tabs = [
   { path: "/", icon: "inventory_2", label: "Catalog" },
+  { path: "/disassemble", icon: "handyman", label: "Disassemble" },
   { path: "/add", icon: "add_circle", label: "Add Part" },
   { path: "/settings", icon: "settings", label: "Settings" },
 ] as const;
