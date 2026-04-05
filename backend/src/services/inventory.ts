@@ -47,7 +47,7 @@ export async function addPart(input: AddPartInput) {
         .insert(parts)
         .values({
           partNumber: normalized,
-          partNumberRaw: input.partNumber.trim(),
+          partNumberRaw: input.partNumber.trim().replace(/^#+/, ""),
           brand: input.brand,
           description: input.description,
           quantity: input.quantity,
