@@ -57,6 +57,10 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
   const [depleteQty, setDepleteQty] = useState(1);
   const [depleting, setDepleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showListingForm, setShowListingForm] = useState(false);
+  const [listingId, setListingId] = useState("");
+  const [listingQty, setListingQty] = useState(1);
+  const [listingSaving, setListingSaving] = useState(false);
 
   const EVENTS_LIMIT = 20;
 
@@ -125,6 +129,34 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     setEditing(true);
   }
 
+  function startListing() {
+    if (!part) return;
+    setListingId(part.ebayListingId || "");
+    setListingQty(part.ebayListingId ? part.listedQuantity : 1);
+    setShowListingForm(true);
+  }
+
+  async function handleSaveListing() {
+    if (!part) return;
+    setListingSaving(true);
+    try {
+      await api(`/api/parts/${part.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ebayListingId: listingId.trim() || null,
+          listedQuantity: listingId.trim() ? listingQty : 0,
+        }),
+      });
+      setShowListingForm(false);
+      fetchPart();
+      onPartChanged();
+    } catch (err: any) {
+      alert(err.message || "Failed to update listing");
+    } finally {
+      setListingSaving(false);
+    }
+  }
+
   async function handleDelete() {
     if (!part) return;
     try {
@@ -138,6 +170,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
 
   const menuItems = [
     { label: "Edit", icon: "edit", onClick: startEdit },
+    { label: part?.ebayListingId ? "Update Listing" : "Mark as Listed", icon: "storefront", onClick: startListing },
     { label: "Mark Used", icon: "build", onClick: () => { setDepleteQty(1); setDepleteAction("used"); } },
     { label: "Mark Sold", icon: "sell", onClick: () => { setDepleteQty(1); setDepleteAction("sold"); } },
     { label: "Delete", icon: "delete", onClick: () => setShowDeleteConfirm(true), destructive: true },
@@ -148,6 +181,26 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
       <Modal open={true} onClose={onClose} title={part?.partNumberRaw || "Loading..."} actions={part ? <DropdownMenu items={menuItems} /> : undefined}>
         {loading || !part ? (
           <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">Loading...</div>
+        ) : showListingForm ? (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">eBay Listing ID</label>
+              <input type="text" value={listingId} onChange={(e) => setListingId(e.target.value)} placeholder="e.g. 123456789012" className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100" />
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">The numeric item ID from your eBay listing URL</p>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Quantity Listed</label>
+              <input type="number" min={0} max={part.quantity} value={listingQty} onChange={(e) => setListingQty(Math.max(0, Math.min(part.quantity, parseInt(e.target.value) || 0)))} className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100" />
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{part.quantity} total in stock</p>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setShowListingForm(false)} className="px-3 py-1.5 text-xs font-medium rounded-md bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+              {part.ebayListingId && (
+                <button onClick={() => { setListingId(""); setListingQty(0); }} className="px-3 py-1.5 text-xs font-medium rounded-md text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40">Unlist</button>
+              )}
+              <button onClick={handleSaveListing} disabled={listingSaving} className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50">{listingSaving ? "Saving..." : "Save"}</button>
+            </div>
+          </div>
         ) : editing ? (
           <div className="space-y-3">
             <div>
@@ -189,6 +242,12 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
                   {part.listedQuantity > 0 && <StatusBadge variant="info">{part.listedQuantity} listed</StatusBadge>}
                 </div>
               </div>
+              {part.ebayListingId && (
+                <div className="col-span-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">eBay Listing</p>
+                  <p className="text-sm text-gray-900 dark:text-gray-100 mt-0.5 font-mono">{part.ebayListingId}</p>
+                </div>
+              )}
             </div>
 
             {crossRefs.length > 0 && (
