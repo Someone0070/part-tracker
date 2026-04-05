@@ -10,11 +10,25 @@ export const parts = pgTable("parts", {
   quantity: integer("quantity").notNull().default(0),
   listedQuantity: integer("listed_quantity").notNull().default(0),
   ebayListingId: text("ebay_listing_id").unique(),
+  applianceId: integer("appliance_id").references(() => appliances.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
   check("listed_quantity_check", sql`${table.listedQuantity} >= 0 AND ${table.listedQuantity} <= ${table.quantity}`),
 ]);
+
+export const appliances = pgTable("appliances", {
+  id: serial("id").primaryKey(),
+  brand: text("brand"),
+  modelNumber: text("model_number"),
+  serialNumber: text("serial_number"),
+  applianceType: text("appliance_type"),
+  notes: text("notes"),
+  photoKey: text("photo_key"),
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
 
 export const crossReferences = pgTable("cross_references", {
   id: serial("id").primaryKey(),

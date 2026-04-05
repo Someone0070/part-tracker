@@ -8,6 +8,13 @@
       "when": 1775421796218,
       "tag": "0000_damp_proudstar",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1775426006092,
+      "tag": "0001_chilly_korg",
+      "breakpoints": true
     }
   ]
 }
