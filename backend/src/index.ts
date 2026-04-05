@@ -45,8 +45,9 @@ app.use(generalLimiter);
 // Application routes
 app.use("/api/parts", partsRouter);
 app.use("/api/settings", settingsRouter);
-// Larger body limit for OCR endpoint (base64 images up to ~10MB)
+// Larger body limit for OCR and upload endpoints (base64 images up to ~10MB)
 app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
+app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
 app.use("/api/appliances", appliancesRouter);
 
 // Start server

@@ -5,6 +5,7 @@ import { eq, desc } from "drizzle-orm";
 import { validateBody, createApplianceSchema, updateApplianceSchema, addPartSchema } from "../middleware/validate.js";
 import { addPart } from "../services/inventory.js";
 import { extractApplianceInfo } from "../services/ocr.js";
+import { isR2Configured, uploadImage } from "../services/r2.js";
 
 const router = Router();
 
@@ -35,6 +36,43 @@ router.post("/ocr", async (req, res) => {
     }
     console.error("OCR error:", err);
     res.status(500).json({ error: "OCR failed" });
+  }
+});
+
+// POST /api/appliances/upload — upload unit photo to R2
+router.post("/upload", async (req, res) => {
+  try {
+    if (!isR2Configured()) {
+      res.status(503).json({
+        error: "Image storage not configured",
+        message: "R2 storage is not set up yet. Photos cannot be saved at this time.",
+      });
+      return;
+    }
+    const { image, contentType } = req.body;
+    if (!image || typeof image !== "string") {
+      res.status(400).json({ error: "image (base64 string) required" });
+      return;
+    }
+    if (image.length > 10 * 1024 * 1024) {
+      res.status(400).json({ error: "Image too large (max 10MB)" });
+      return;
+    }
+    const buffer = Buffer.from(image, "base64");
+    const key = `appliances/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    const type = contentType || "image/jpeg";
+    await uploadImage(key, buffer, type);
+    res.json({ key });
+  } catch (err: any) {
+    if (err.message?.includes("not configured")) {
+      res.status(503).json({
+        error: "Image storage not configured",
+        message: "R2 storage is not set up yet. Photos cannot be saved at this time.",
+      });
+      return;
+    }
+    console.error("Upload error:", err);
+    res.status(500).json({ error: "Upload failed" });
   }
 });
 
