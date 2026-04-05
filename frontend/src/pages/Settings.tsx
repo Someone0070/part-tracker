@@ -7,21 +7,24 @@ import { Modal } from "../components/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusBadge } from "../components/StatusBadge";
 
-interface SettingsData {
+interface AppSettings {
   crossRefEnabled: boolean;
   darkMode: boolean;
-  ebayConnected: boolean;
-  ebayPaused: boolean;
-  ebayQuarantined: boolean;
+  ebay: {
+    enabled: boolean;
+    connected: boolean;
+    quarantinedCount: number;
+  };
 }
 
 export function Settings() {
   const { logout, changePassword } = useAuth();
-  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [connectingEbay, setConnectingEbay] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -30,7 +33,7 @@ export function Settings() {
   async function fetchSettings() {
     setLoading(true);
     try {
-      const data = await api<SettingsData>("/api/settings");
+      const data = await api<AppSettings>("/api/settings");
       setSettings(data);
     } catch {
       // stay on loading state
@@ -39,20 +42,45 @@ export function Settings() {
     }
   }
 
-  async function updateSetting(key: keyof SettingsData, value: boolean) {
+  async function updateSetting(key: string, value: boolean) {
     if (!settings) return;
-    const prev = settings[key];
-    setSettings({ ...settings, [key]: value });
+
+    // Optimistic update
+    const prev = { ...settings };
+    if (key === "ebayEnabled") {
+      setSettings({ ...settings, ebay: { ...settings.ebay, enabled: value } });
+    } else {
+      setSettings({ ...settings, [key]: value });
+    }
+
     try {
+      const body: Record<string, boolean> = {};
+      if (key === "crossRefEnabled") body.crossRefEnabled = value;
+      if (key === "darkMode") body.darkMode = value;
+      if (key === "ebayEnabled") body.ebayEnabled = value;
+
       await api("/api/settings", {
-        method: "PATCH",
-        body: JSON.stringify({ [key]: value }),
+        method: "PUT",
+        body: JSON.stringify(body),
       });
+
       if (key === "darkMode") {
         document.documentElement.classList.toggle("dark", value);
       }
     } catch {
-      setSettings({ ...settings, [key]: prev });
+      setSettings(prev);
+    }
+  }
+
+  async function handleConnectEbay() {
+    setConnectingEbay(true);
+    try {
+      const data = await api<{ url: string }>("/api/ebay/auth-url", {
+        method: "POST",
+      });
+      window.location.href = data.url;
+    } catch {
+      setConnectingEbay(false);
     }
   }
 
@@ -60,15 +88,6 @@ export function Settings() {
     try {
       await api("/api/ebay/disconnect", { method: "POST" });
       fetchSettings();
-    } catch {
-      // ignore
-    }
-  }
-
-  async function handleConnectEbay() {
-    try {
-      const data = await api<{ url: string }>("/api/ebay/connect");
-      window.location.href = data.url;
     } catch {
       // ignore
     }
@@ -110,21 +129,23 @@ export function Settings() {
         <section>
           <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">eBay Integration</h2>
           <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
-            {settings.ebayConnected ? (
+            {settings.ebay.connected ? (
               <>
                 <SettingRow
                   icon="store"
                   label="eBay connected"
                   description={
-                    settings.ebayQuarantined
-                      ? "Sync paused due to repeated errors"
-                      : settings.ebayPaused
-                        ? "Sync is paused"
-                        : "Syncing active listings"
+                    settings.ebay.enabled
+                      ? "Syncing active listings"
+                      : "Sync is paused"
                   }
                   action={
                     <div className="flex items-center gap-2">
-                      {settings.ebayQuarantined && <StatusBadge variant="warning">Quarantined</StatusBadge>}
+                      {settings.ebay.quarantinedCount > 0 && (
+                        <StatusBadge variant="warning">
+                          {settings.ebay.quarantinedCount} unmatched
+                        </StatusBadge>
+                      )}
                       <button
                         onClick={() => setShowDisconnectConfirm(true)}
                         className="text-xs text-red-600 dark:text-red-400 font-medium hover:underline"
@@ -138,7 +159,7 @@ export function Settings() {
                   icon="pause_circle"
                   label="Pause sync"
                   description="Temporarily stop eBay sync"
-                  action={<Toggle checked={settings.ebayPaused} onChange={(v) => updateSetting("ebayPaused", v)} disabled={settings.ebayQuarantined} />}
+                  action={<Toggle checked={!settings.ebay.enabled} onChange={(v) => updateSetting("ebayEnabled", !v)} />}
                 />
               </>
             ) : (
@@ -149,9 +170,10 @@ export function Settings() {
                 action={
                   <button
                     onClick={handleConnectEbay}
-                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200"
+                    disabled={connectingEbay}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50"
                   >
-                    Connect
+                    {connectingEbay ? "Connecting..." : "Connect"}
                   </button>
                 }
               />
@@ -242,7 +264,6 @@ function ChangePasswordModal({ onClose, onSubmit }: { onClose: () => void; onSub
     setLoading(true);
     try {
       await onSubmit(currentPassword, newPassword);
-      // Will redirect to login since changePassword clears auth
     } catch (err: any) {
       setError(err.message || "Failed to change password");
       setLoading(false);
