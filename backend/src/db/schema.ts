@@ -53,6 +53,9 @@ export const settings = pgTable("settings", {
   passwordVersion: integer("password_version").notNull().default(1),
   pendingEbayState: text("pending_ebay_state"),
   pendingEbayStateExpires: timestamp("pending_ebay_state_expires"),
+  apiKeyHash: text("api_key_hash"),
+  apiKeyPrefix: text("api_key_prefix"),
+  apiKeyScopes: text("api_key_scopes"),
 });
 
 export const inventoryEvents = pgTable("inventory_events", {

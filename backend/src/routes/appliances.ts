@@ -6,12 +6,13 @@ import { validateBody, createApplianceSchema, updateApplianceSchema, addPartSche
 import { addPart } from "../services/inventory.js";
 import { extractApplianceInfo } from "../services/ocr.js";
 import { isR2Configured, uploadImage } from "../services/r2.js";
+import { requireScope } from "../middleware/auth.js";
 
 const router = Router();
 
 // POST /api/appliances/ocr — extract model/serial from sticker photo
 // MUST be before /:id routes so Express doesn't parse "ocr" as an ID
-router.post("/ocr", async (req, res) => {
+router.post("/ocr", requireScope("appliances:write"), async (req, res) => {
   const { image } = req.body as { image?: unknown };
 
   if (typeof image !== "string") {
@@ -40,7 +41,7 @@ router.post("/ocr", async (req, res) => {
 });
 
 // POST /api/appliances/upload — upload unit photo to R2
-router.post("/upload", async (req, res) => {
+router.post("/upload", requireScope("appliances:write"), async (req, res) => {
   try {
     if (!isR2Configured()) {
       res.status(503).json({
@@ -77,7 +78,7 @@ router.post("/upload", async (req, res) => {
 });
 
 // GET /api/appliances — list all, newest first
-router.get("/", async (req, res) => {
+router.get("/", requireScope("appliances:read"), async (req, res) => {
   try {
     const db = getDb();
     const results = await db.select().from(appliances).orderBy(desc(appliances.createdAt));
@@ -89,7 +90,7 @@ router.get("/", async (req, res) => {
 });
 
 // GET /api/appliances/:id — single appliance with linked parts
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireScope("appliances:read"), async (req, res) => {
   try {
     const db = getDb();
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
@@ -113,7 +114,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/appliances — create appliance
-router.post("/", validateBody(createApplianceSchema), async (req, res) => {
+router.post("/", requireScope("appliances:write"), validateBody(createApplianceSchema), async (req, res) => {
   try {
     const db = getDb();
     const [appliance] = await db
@@ -135,7 +136,7 @@ router.post("/", validateBody(createApplianceSchema), async (req, res) => {
 });
 
 // PATCH /api/appliances/:id — update appliance
-router.patch("/:id", validateBody(updateApplianceSchema), async (req, res) => {
+router.patch("/:id", requireScope("appliances:write"), validateBody(updateApplianceSchema), async (req, res) => {
   try {
     const db = getDb();
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
@@ -169,7 +170,7 @@ router.patch("/:id", validateBody(updateApplianceSchema), async (req, res) => {
 });
 
 // POST /api/appliances/:id/parts — add a part linked to this appliance
-router.post("/:id/parts", validateBody(addPartSchema), async (req, res) => {
+router.post("/:id/parts", requireScope("appliances:write"), validateBody(addPartSchema), async (req, res) => {
   try {
     const db = getDb();
     const id = parseInt((req.params as Record<string, string>)["id"], 10);

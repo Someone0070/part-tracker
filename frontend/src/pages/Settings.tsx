@@ -15,7 +15,19 @@ interface AppSettings {
     connected: boolean;
     quarantinedCount: number;
   };
+  apiKey: {
+    exists: boolean;
+    prefix: string | null;
+    scopes: string[];
+  };
 }
+
+const ALL_SCOPES = [
+  { value: "parts:read", label: "Parts - Read" },
+  { value: "parts:write", label: "Parts - Write" },
+  { value: "appliances:read", label: "Appliances - Read" },
+  { value: "appliances:write", label: "Appliances - Write" },
+] as const;
 
 export function Settings() {
   const { logout, changePassword } = useAuth();
@@ -182,6 +194,9 @@ export function Settings() {
           </div>
         </section>
 
+        {/* API Key */}
+        <ApiKeySection settings={settings} onRefresh={fetchSettings} />
+
         {/* Account */}
         <section>
           <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Account</h2>
@@ -241,6 +256,142 @@ export function Settings() {
         destructive
       />
     </>
+  );
+}
+
+function ApiKeySection({ settings, onRefresh }: { settings: AppSettings; onRefresh: () => void }) {
+  const [showKey, setShowKey] = useState<string | null>(null);
+  const [selectedScopes, setSelectedScopes] = useState<string[]>(
+    settings.apiKey.scopes.length > 0 ? settings.apiKey.scopes : ALL_SCOPES.map((s) => s.value)
+  );
+  const [generating, setGenerating] = useState(false);
+  const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  function toggleScope(scope: string) {
+    setSelectedScopes((prev) =>
+      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope]
+    );
+  }
+
+  async function generateKey() {
+    if (selectedScopes.length === 0) return;
+    setGenerating(true);
+    try {
+      const data = await api<{ key: string }>("/api/settings/api-key", {
+        method: "POST",
+        body: JSON.stringify({ scopes: selectedScopes }),
+      });
+      setShowKey(data.key);
+      onRefresh();
+    } catch {
+      // error handled by api client
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function revokeKey() {
+    try {
+      await api("/api/settings/api-key", { method: "DELETE" });
+      setShowKey(null);
+      onRefresh();
+    } catch {
+      // error handled by api client
+    }
+  }
+
+  function copyKey() {
+    if (!showKey) return;
+    navigator.clipboard.writeText(showKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">API Key</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+        {showKey && (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Copy this key now -- it won't be shown again.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1.5 rounded font-mono break-all text-gray-900 dark:text-gray-100">
+                {showKey}
+              </code>
+              <button
+                onClick={copyKey}
+                className="shrink-0 px-2 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200"
+              >
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {settings.apiKey.exists && !showKey && (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Icon name="key" size={16} className="text-gray-400" />
+              <span className="text-sm text-gray-900 dark:text-gray-100">
+                Active key: <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded font-mono">{settings.apiKey.prefix}...</code>
+              </span>
+            </div>
+            <button
+              onClick={() => setShowRevokeConfirm(true)}
+              className="text-xs text-red-600 dark:text-red-400 font-medium hover:underline"
+            >
+              Revoke
+            </button>
+          </div>
+        )}
+
+        {!settings.apiKey.exists && !showKey && (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No API key configured.</p>
+        )}
+
+        <div>
+          <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Scopes</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {ALL_SCOPES.map((scope) => (
+              <label key={scope.value} className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedScopes.includes(scope.value)}
+                  onChange={() => toggleScope(scope.value)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                {scope.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={generateKey}
+          disabled={generating || selectedScopes.length === 0}
+          className="w-full px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50"
+        >
+          {generating ? "Generating..." : settings.apiKey.exists ? "Regenerate Key" : "Generate Key"}
+        </button>
+
+        <p className="text-xs text-gray-400 dark:text-gray-500">
+          Use header <code className="font-mono">X-API-Key: your-key</code> to authenticate.
+        </p>
+      </div>
+
+      <ConfirmDialog
+        open={showRevokeConfirm}
+        onClose={() => setShowRevokeConfirm(false)}
+        onConfirm={revokeKey}
+        title="Revoke API key"
+        message="This will immediately invalidate the current API key. Any tools using it will stop working."
+        confirmLabel="Revoke"
+        destructive
+      />
+    </section>
   );
 }
 

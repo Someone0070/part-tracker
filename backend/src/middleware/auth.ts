@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { getDb } from "../db/index.js";
 import { settings } from "../db/schema.js";
 
@@ -13,6 +14,7 @@ declare global {
   namespace Express {
     interface Request {
       authenticated?: boolean;
+      apiKeyScopes?: string[];
     }
   }
 }
@@ -30,6 +32,26 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     return next();
   }
 
+  // Check for API key first
+  const apiKey = req.headers["x-api-key"];
+  if (typeof apiKey === "string" && apiKey.length > 0) {
+    validateApiKey(apiKey)
+      .then((scopes) => {
+        if (!scopes) {
+          res.status(401).json({ error: "Invalid API key" });
+          return;
+        }
+        req.authenticated = true;
+        req.apiKeyScopes = scopes;
+        next();
+      })
+      .catch(() => {
+        res.status(500).json({ error: "Internal error" });
+      });
+    return;
+  }
+
+  // Fall back to JWT
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
     res.status(401).json({ error: "Unauthorized" });
@@ -59,6 +81,43 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
       });
   } catch {
     res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+export function requireScope(scope: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    // JWT users (no apiKeyScopes) have full access
+    if (!req.apiKeyScopes) {
+      next();
+      return;
+    }
+    if (req.apiKeyScopes.includes(scope)) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: `Missing scope: ${scope}` });
+  };
+}
+
+async function validateApiKey(key: string): Promise<string[] | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      apiKeyHash: settings.apiKeyHash,
+      apiKeyScopes: settings.apiKeyScopes,
+    })
+    .from(settings)
+    .limit(1);
+
+  if (!row?.apiKeyHash) return null;
+
+  const hash = crypto.createHash("sha256").update(key).digest("hex");
+  if (hash !== row.apiKeyHash) return null;
+
+  try {
+    return JSON.parse(row.apiKeyScopes || "[]");
+  } catch {
+    return [];
   }
 }
 

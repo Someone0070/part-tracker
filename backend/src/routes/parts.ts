@@ -5,11 +5,12 @@ import { eq, ilike, sql, desc, or, and, gt } from "drizzle-orm";
 import { validateBody, addPartSchema, depletePartSchema, updatePartSchema } from "../middleware/validate.js";
 import { addPart, depletePart, updatePartMetadata } from "../services/inventory.js";
 import { normalizePartNumber } from "../services/normalize.js";
+import { requireScope } from "../middleware/auth.js";
 
 const router = Router();
 
 // GET /api/parts — list all, optional search
-router.get("/", async (req, res) => {
+router.get("/", requireScope("parts:read"), async (req, res) => {
   try {
     const db = getDb();
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
@@ -29,7 +30,7 @@ router.get("/", async (req, res) => {
 });
 
 // GET /api/parts/lookup — main lookup endpoint
-router.get("/lookup", async (req, res) => {
+router.get("/lookup", requireScope("parts:read"), async (req, res) => {
   try {
     const partNumber = typeof req.query.partNumber === "string" ? req.query.partNumber : "";
     if (!partNumber) {
@@ -61,7 +62,7 @@ router.get("/lookup", async (req, res) => {
 });
 
 // GET /api/parts/:id — single part with cross-refs and events
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireScope("parts:read"), async (req, res) => {
   try {
     const db = getDb();
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
@@ -120,7 +121,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/parts — add/upsert
-router.post("/", validateBody(addPartSchema), async (req, res) => {
+router.post("/", requireScope("parts:write"), validateBody(addPartSchema), async (req, res) => {
   try {
     const result = await addPart(req.body);
     res.status(201).json(partToJson(result));
@@ -131,7 +132,7 @@ router.post("/", validateBody(addPartSchema), async (req, res) => {
 });
 
 // PATCH /api/parts/:id — update metadata only
-router.patch("/:id", validateBody(updatePartSchema), async (req, res) => {
+router.patch("/:id", requireScope("parts:write"), validateBody(updatePartSchema), async (req, res) => {
   try {
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
     const result = await updatePartMetadata(id, req.body);
@@ -151,7 +152,7 @@ router.patch("/:id", validateBody(updatePartSchema), async (req, res) => {
 });
 
 // POST /api/parts/:id/deplete
-router.post("/:id/deplete", validateBody(depletePartSchema), async (req, res) => {
+router.post("/:id/deplete", requireScope("parts:write"), validateBody(depletePartSchema), async (req, res) => {
   try {
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
     const result = await depletePart({

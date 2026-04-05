@@ -15,6 +15,13 @@
       "when": 1775426006092,
       "tag": "0001_chilly_korg",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775429837112,
+      "tag": "0002_noisy_skrulls",
+      "breakpoints": true
     }
   ]
 }
