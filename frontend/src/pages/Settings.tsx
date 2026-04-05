@@ -39,8 +39,8 @@ export function Settings() {
     fetchSettings();
   }, []);
 
-  async function fetchSettings() {
-    setLoading(true);
+  async function fetchSettings(showLoading = true) {
+    if (showLoading) setLoading(true);
     try {
       const data = await api<AppSettings>("/api/settings");
       setSettings(data);
@@ -116,10 +116,10 @@ export function Settings() {
         </section>
 
         {/* eBay */}
-        <EbaySection settings={settings} onRefresh={fetchSettings} onUpdateSetting={updateSetting} />
+        <EbaySection settings={settings} onRefresh={() => fetchSettings(false)} onUpdateSetting={updateSetting} />
 
         {/* API Key */}
-        <ApiKeySection settings={settings} onRefresh={fetchSettings} />
+        <ApiKeySection settings={settings} onRefresh={() => fetchSettings(false)} />
 
         {/* Account */}
         <section>
