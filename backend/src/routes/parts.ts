@@ -61,7 +61,7 @@ router.get("/lookup", async (req, res) => {
 });
 
 // GET /api/parts/:id — single part with cross-refs and events
-router.get("/:id(\\d+)", async (req, res) => {
+router.get("/:id", async (req, res) => {
   try {
     const db = getDb();
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
@@ -131,7 +131,7 @@ router.post("/", validateBody(addPartSchema), async (req, res) => {
 });
 
 // PATCH /api/parts/:id — update metadata only
-router.patch("/:id(\\d+)", validateBody(updatePartSchema), async (req, res) => {
+router.patch("/:id", validateBody(updatePartSchema), async (req, res) => {
   try {
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
     const result = await updatePartMetadata(id, req.body);
@@ -151,7 +151,7 @@ router.patch("/:id(\\d+)", validateBody(updatePartSchema), async (req, res) => {
 });
 
 // POST /api/parts/:id/deplete
-router.post("/:id(\\d+)/deplete", validateBody(depletePartSchema), async (req, res) => {
+router.post("/:id/deplete", validateBody(depletePartSchema), async (req, res) => {
   try {
     const id = parseInt((req.params as Record<string, string>)["id"], 10);
     const result = await depletePart({
