@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { StatusBadge } from "../components/StatusBadge";
@@ -23,6 +24,7 @@ export function Catalog() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
+  const navigate = useNavigate();
 
   const fetchParts = useCallback(async () => {
     setLoading(true);
@@ -50,6 +52,16 @@ export function Catalog() {
   return (
     <>
       <div className="pt-4">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">Catalog</h1>
+          <button
+            onClick={() => navigate("/add")}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200"
+          >
+            <Icon name="add" size={16} />
+            Add Part
+          </button>
+        </div>
         <div className="relative mb-4">
           <Icon name="search" size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
