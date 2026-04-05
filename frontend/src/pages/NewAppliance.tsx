@@ -27,14 +27,6 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
 
 export function NewAppliance() {
   const navigate = useNavigate();
@@ -49,7 +41,6 @@ export function NewAppliance() {
   // Unit photo state
   const [unitPhotoBase64, setUnitPhotoBase64] = useState<string | null>(null);
   const [unitPhotoPreview, setUnitPhotoPreview] = useState<string | null>(null);
-  const unitInputRef = useRef<HTMLInputElement>(null);
 
   // Form fields
   const [brand, setBrand] = useState("");
@@ -89,15 +80,6 @@ export function NewAppliance() {
       setOcrLoading(false);
       if (stickerInputRef.current) stickerInputRef.current.value = "";
     }
-  }
-
-  async function handleUnitCapture(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const [base64, dataUrl] = await Promise.all([fileToBase64(file), fileToDataUrl(file)]);
-    setUnitPhotoBase64(base64);
-    setUnitPhotoPreview(dataUrl);
-    if (unitInputRef.current) unitInputRef.current.value = "";
   }
 
   function removeUnitPhoto() {
@@ -162,6 +144,37 @@ export function NewAppliance() {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
+        {/* Unit photo — first, but disabled until R2 is configured */}
+        <div className="opacity-50">
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Unit Photo <span className="text-xs font-normal text-gray-400 dark:text-gray-500">(optional)</span>
+          </p>
+          {unitPhotoPreview ? (
+            <div className="relative inline-block">
+              <img
+                src={unitPhotoPreview}
+                alt="Unit preview"
+                className="w-24 h-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+              />
+              <button
+                type="button"
+                onClick={removeUnitPhoto}
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-700 dark:hover:bg-gray-300"
+              >
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-not-allowed">
+              <Icon name="photo_camera" size={20} className="text-gray-400 dark:text-gray-500" />
+              <span className="text-sm text-gray-400 dark:text-gray-500">Take unit photo</span>
+            </div>
+          )}
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+            R2 image storage is not configured. Add R2 credentials to enable photo uploads.
+          </p>
+        </div>
+
         {/* Sticker OCR section */}
         {!stickerDone && !stickerSkipped && (
           <div>
@@ -212,42 +225,6 @@ export function NewAppliance() {
             Sticker analyzed — fields populated below. Edit as needed.
           </div>
         )}
-
-        {/* Unit photo */}
-        <div>
-          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Unit Photo <span className="text-xs font-normal text-gray-400 dark:text-gray-500">(optional)</span>
-          </p>
-          {unitPhotoPreview ? (
-            <div className="relative inline-block">
-              <img
-                src={unitPhotoPreview}
-                alt="Unit preview"
-                className="w-24 h-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-              />
-              <button
-                type="button"
-                onClick={removeUnitPhoto}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-700 dark:hover:bg-gray-300"
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ) : (
-            <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500">
-              <Icon name="photo_camera" size={20} className="text-gray-500 dark:text-gray-400" />
-              <span className="text-sm text-gray-600 dark:text-gray-300">Take unit photo</span>
-              <input
-                ref={unitInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="sr-only"
-                onChange={handleUnitCapture}
-              />
-            </label>
-          )}
-        </div>
 
         {/* Form fields — always shown after sticker step resolved */}
         {showFields && (
