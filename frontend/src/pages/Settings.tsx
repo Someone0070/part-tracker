@@ -5,7 +5,6 @@ import { Toggle } from "../components/Toggle";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { StatusBadge } from "../components/StatusBadge";
 
 interface AppSettings {
   crossRefEnabled: boolean;
@@ -35,8 +34,6 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const [connectingEbay, setConnectingEbay] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -85,26 +82,6 @@ export function Settings() {
     }
   }
 
-  async function handleConnectEbay() {
-    setConnectingEbay(true);
-    try {
-      const data = await api<{ url: string }>("/api/ebay/auth-url", {
-        method: "POST",
-      });
-      window.location.href = data.url;
-    } catch {
-      setConnectingEbay(false);
-    }
-  }
-
-  async function handleDisconnectEbay() {
-    try {
-      await api("/api/ebay/disconnect", { method: "POST" });
-      fetchSettings();
-    } catch {
-      // ignore
-    }
-  }
 
   if (loading || !settings) {
     return (
@@ -124,73 +101,11 @@ export function Settings() {
           <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">General</h2>
           <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
             <SettingRow
-              icon="sync"
-              label="Cross-references"
-              description="Auto-fetch interchangeable part numbers"
-              action={<Toggle checked={settings.crossRefEnabled} onChange={(v) => updateSetting("crossRefEnabled", v)} />}
-            />
-            <SettingRow
               icon="dark_mode"
               label="Dark mode"
               description="Switch to dark theme"
               action={<Toggle checked={settings.darkMode} onChange={(v) => updateSetting("darkMode", v)} />}
             />
-          </div>
-        </section>
-
-        {/* eBay */}
-        <section>
-          <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">eBay Integration</h2>
-          <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
-            {settings.ebay.connected ? (
-              <>
-                <SettingRow
-                  icon="store"
-                  label="eBay connected"
-                  description={
-                    settings.ebay.enabled
-                      ? "Syncing active listings"
-                      : "Sync is paused"
-                  }
-                  action={
-                    <div className="flex items-center gap-2">
-                      {settings.ebay.quarantinedCount > 0 && (
-                        <StatusBadge variant="warning">
-                          {settings.ebay.quarantinedCount} unmatched
-                        </StatusBadge>
-                      )}
-                      <button
-                        onClick={() => setShowDisconnectConfirm(true)}
-                        className="text-xs text-red-600 dark:text-red-400 font-medium hover:underline"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  }
-                />
-                <SettingRow
-                  icon="pause_circle"
-                  label="Pause sync"
-                  description="Temporarily stop eBay sync"
-                  action={<Toggle checked={!settings.ebay.enabled} onChange={(v) => updateSetting("ebayEnabled", !v)} />}
-                />
-              </>
-            ) : (
-              <SettingRow
-                icon="store"
-                label="Connect eBay"
-                description="Sync listings and track sold items"
-                action={
-                  <button
-                    onClick={handleConnectEbay}
-                    disabled={connectingEbay}
-                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50"
-                  >
-                    {connectingEbay ? "Connecting..." : "Connect"}
-                  </button>
-                }
-              />
-            )}
           </div>
         </section>
 
@@ -246,15 +161,6 @@ export function Settings() {
         destructive
       />
 
-      <ConfirmDialog
-        open={showDisconnectConfirm}
-        onClose={() => setShowDisconnectConfirm(false)}
-        onConfirm={handleDisconnectEbay}
-        title="Disconnect eBay"
-        message="This will stop syncing listings and remove the eBay connection. You can reconnect later."
-        confirmLabel="Disconnect"
-        destructive
-      />
     </>
   );
 }
