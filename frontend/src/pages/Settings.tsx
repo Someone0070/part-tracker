@@ -35,6 +35,7 @@ export function Settings() {
     try {
       const data = await api<AppSettings>("/api/settings");
       setSettings(data);
+      document.documentElement.classList.toggle("dark", data.darkMode);
     } catch {
       // stay on loading state
     } finally {
