@@ -36,6 +36,25 @@ export const changePasswordSchema = z.object({
   newPassword: z.string().min(1).max(72),
 });
 
+export const createApplianceSchema = z.object({
+  brand: z.string().max(100).optional(),
+  modelNumber: z.string().max(100).optional(),
+  serialNumber: z.string().max(100).optional(),
+  applianceType: z.string().max(100).optional(),
+  notes: z.string().max(1000).optional(),
+  photoKey: z.string().max(500).optional(),
+});
+
+export const updateApplianceSchema = z.object({
+  brand: z.string().max(100).optional(),
+  modelNumber: z.string().max(100).optional(),
+  serialNumber: z.string().max(100).optional(),
+  applianceType: z.string().max(100).optional(),
+  notes: z.string().max(1000).optional(),
+  photoKey: z.string().max(500).optional(),
+  status: z.enum(["active", "stripped"]).optional(),
+});
+
 export function validateBody<T extends z.ZodType>(schema: T) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);

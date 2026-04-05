@@ -12,6 +12,7 @@ import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
 import partsRouter from "./routes/parts.js";
 import settingsRouter from "./routes/settings.js";
+import appliancesRouter from "./routes/appliances.js";
 
 const app = express();
 const port = parseInt(process.env.PORT || "3000", 10);
@@ -44,6 +45,7 @@ app.use(generalLimiter);
 // Application routes
 app.use("/api/parts", partsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/appliances", appliancesRouter);
 
 // Start server
 async function start() {
