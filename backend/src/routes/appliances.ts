@@ -169,6 +169,29 @@ router.patch("/:id", requireScope("appliances:write"), validateBody(updateApplia
   }
 });
 
+// DELETE /api/appliances/:id
+router.delete("/:id", requireScope("appliances:write"), async (req, res) => {
+  try {
+    const db = getDb();
+    const id = parseInt((req.params as Record<string, string>)["id"], 10);
+
+    const [existing] = await db.select().from(appliances).where(eq(appliances.id, id)).limit(1);
+    if (!existing) {
+      res.status(404).json({ error: "Appliance not found" });
+      return;
+    }
+
+    // Unlink parts (don't delete them, just remove the FK)
+    await db.update(parts).set({ applianceId: null }).where(eq(parts.applianceId, id));
+    await db.delete(appliances).where(eq(appliances.id, id));
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Delete appliance error:", err);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
 // POST /api/appliances/:id/parts — add a part linked to this appliance
 router.post("/:id/parts", requireScope("appliances:write"), validateBody(addPartSchema), async (req, res) => {
   try {

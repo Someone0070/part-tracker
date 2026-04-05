@@ -8,12 +8,12 @@ import { ApplianceDetail } from "./ApplianceDetail";
 interface Appliance {
   id: number;
   brand: string | null;
-  model: string | null;
+  modelNumber: string | null;
   serialNumber: string | null;
-  type: string | null;
+  applianceType: string | null;
   status: string;
   notes: string | null;
-  photoUrl: string | null;
+  photoKey: string | null;
   createdAt: string;
 }
 
@@ -99,15 +99,15 @@ export function Disassemble() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                    {[appliance.brand, appliance.model].filter(Boolean).join(" ") || "Unknown Appliance"}
+                    {[appliance.brand, appliance.modelNumber].filter(Boolean).join(" ") || "Unknown Appliance"}
                   </span>
                   <StatusBadge variant={statusVariant(appliance.status)}>
                     {statusLabel(appliance.status)}
                   </StatusBadge>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                  {appliance.type && <span className="capitalize">{appliance.type}</span>}
-                  {appliance.type && <span>·</span>}
+                  {appliance.applianceType && <span className="capitalize">{appliance.applianceType}</span>}
+                  {appliance.applianceType && <span>·</span>}
                   <span>{formatDate(appliance.createdAt)}</span>
                 </div>
               </div>

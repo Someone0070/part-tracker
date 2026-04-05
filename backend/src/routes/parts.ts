@@ -175,6 +175,30 @@ router.post("/:id/deplete", requireScope("parts:write"), validateBody(depletePar
   }
 });
 
+// DELETE /api/parts/:id
+router.delete("/:id", requireScope("parts:write"), async (req, res) => {
+  try {
+    const db = getDb();
+    const id = parseInt((req.params as Record<string, string>)["id"], 10);
+
+    const [part] = await db.select().from(parts).where(eq(parts.id, id)).limit(1);
+    if (!part) {
+      res.status(404).json({ error: "Part not found" });
+      return;
+    }
+
+    // Delete related records first
+    await db.delete(inventoryEvents).where(eq(inventoryEvents.partId, id));
+    await db.delete(crossReferences).where(eq(crossReferences.partId, id));
+    await db.delete(parts).where(eq(parts.id, id));
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Delete part error:", err);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
 // --- Helpers ---
 
 function partToJson(p: typeof parts.$inferSelect) {

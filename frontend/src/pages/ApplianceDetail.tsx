@@ -9,12 +9,12 @@ const INPUT_CLASS =
 interface Appliance {
   id: number;
   brand: string | null;
-  model: string | null;
+  modelNumber: string | null;
   serialNumber: string | null;
-  type: string | null;
+  applianceType: string | null;
   status: string;
   notes: string | null;
-  photoUrl: string | null;
+  photoKey: string | null;
   createdAt: string;
 }
 
@@ -50,8 +50,9 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Strip action
+  // Strip / delete actions
   const [stripping, setStripping] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Add part form
   const [showAddPart, setShowAddPart] = useState(false);
@@ -65,17 +66,26 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      api<Appliance>(`/api/appliances/${id}`),
-      api<AppliancePart[]>(`/api/appliances/${id}/parts`),
-    ])
-      .then(([applianceData, partsData]) => {
-        setAppliance(applianceData);
-        setParts(partsData);
+    api<{ appliance: Appliance; parts: AppliancePart[] }>(`/api/appliances/${id}`)
+      .then((data) => {
+        setAppliance(data.appliance);
+        setParts(data.parts);
       })
       .catch((err: any) => setError(err.message || "Failed to load appliance"))
       .finally(() => setLoading(false));
   }, [id]);
+
+  async function handleDelete() {
+    if (!confirm("Delete this appliance? Parts will be unlinked but not deleted.")) return;
+    setDeleting(true);
+    try {
+      await api(`/api/appliances/${id}`, { method: "DELETE" });
+      onBack();
+    } catch (err: any) {
+      setError(err.message || "Failed to delete");
+      setDeleting(false);
+    }
+  }
 
   async function handleMarkStripped() {
     if (!appliance) return;
@@ -145,7 +155,7 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
     );
   }
 
-  const title = [appliance.brand, appliance.model].filter(Boolean).join(" ") || "Unknown Appliance";
+  const title = [appliance.brand, appliance.modelNumber].filter(Boolean).join(" ") || "Unknown Appliance";
 
   return (
     <div className="pt-4">
@@ -167,16 +177,16 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
 
       {/* Info card */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700 mb-4">
-        {appliance.type && (
+        {appliance.applianceType && (
           <div className="flex items-center px-4 py-3">
             <span className="text-xs text-gray-500 dark:text-gray-400 w-24 shrink-0">Type</span>
-            <span className="text-sm text-gray-900 dark:text-gray-100 capitalize">{appliance.type}</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100 capitalize">{appliance.applianceType}</span>
           </div>
         )}
-        {appliance.model && (
+        {appliance.modelNumber && (
           <div className="flex items-center px-4 py-3">
             <span className="text-xs text-gray-500 dark:text-gray-400 w-24 shrink-0">Model</span>
-            <span className="text-sm text-gray-900 dark:text-gray-100">{appliance.model}</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">{appliance.modelNumber}</span>
           </div>
         )}
         {appliance.serialNumber && (
@@ -191,21 +201,30 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
             <span className="text-sm text-gray-900 dark:text-gray-100">{appliance.notes}</span>
           </div>
         )}
-        {!appliance.type && !appliance.model && !appliance.serialNumber && !appliance.notes && (
+        {!appliance.applianceType && !appliance.modelNumber && !appliance.serialNumber && !appliance.notes && (
           <div className="px-4 py-3 text-sm text-gray-400 dark:text-gray-500">No details recorded</div>
         )}
       </div>
 
-      {/* Mark as stripped */}
-      {appliance.status === "active" && (
+      {/* Actions */}
+      <div className="flex gap-2 mb-5">
+        {appliance.status === "active" && (
+          <button
+            onClick={handleMarkStripped}
+            disabled={stripping}
+            className="flex-1 px-3 py-2.5 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {stripping ? "Updating..." : "Mark as Fully Stripped"}
+          </button>
+        )}
         <button
-          onClick={handleMarkStripped}
-          disabled={stripping}
-          className="w-full mb-5 px-3 py-2.5 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={handleDelete}
+          disabled={deleting}
+          className="px-3 py-2.5 text-sm font-medium rounded-lg text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
         >
-          {stripping ? "Updating..." : "Mark as Fully Stripped"}
+          {deleting ? "..." : "Delete"}
         </button>
-      )}
+      </div>
 
       {/* Parts pulled section */}
       <div className="mb-3 flex items-center justify-between">
