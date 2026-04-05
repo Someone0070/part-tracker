@@ -25,6 +25,7 @@ const EXEMPT_PATHS = [
   "/api/auth/logout",
   "/api/ebay/callback",
   "/api/health",
+  "/api/internal/ebay-poll",
 ];
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {

@@ -7,12 +7,15 @@ import { seedSettings } from "./db/seed.js";
 import { proxySecret } from "./middleware/proxy-secret.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { securityHeaders } from "./middleware/security-headers.js";
-import { generalLimiter } from "./middleware/rate-limit.js";
+import { generalLimiter, cronLimiter } from "./middleware/rate-limit.js";
+import { getClientIp } from "./lib/client-ip.js";
 import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
 import partsRouter from "./routes/parts.js";
 import settingsRouter from "./routes/settings.js";
 import appliancesRouter from "./routes/appliances.js";
+import ebayRouter from "./routes/ebay.js";
+import { pollEbayOrders } from "./services/ebay.js";
 
 const app = express();
 const port = parseInt(process.env.PORT || "3000", 10);
@@ -36,6 +39,32 @@ app.use("/api/health", healthRouter);
 // Auth routes — before auth middleware (some routes exempt)
 app.use("/api/auth", authRouter);
 
+// Internal cron endpoint — before auth middleware, protected by INTERNAL_CRON_SECRET
+app.post("/api/internal/ebay-poll", cronLimiter, async (req, res) => {
+  const clientIp = getClientIp(req);
+  console.log(`eBay poll invoked from IP: ${clientIp}`);
+
+  const cronSecret = process.env.INTERNAL_CRON_SECRET;
+  if (!cronSecret) {
+    res.status(500).json({ error: "Server misconfigured" });
+    return;
+  }
+
+  const provided = req.headers.authorization;
+  if (provided !== `Bearer ${cronSecret}`) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  try {
+    const result = await pollEbayOrders();
+    res.json(result);
+  } catch (err) {
+    console.error("eBay poll error:", err);
+    res.status(500).json({ error: "Poll failed" });
+  }
+});
+
 // Auth middleware — applies to everything below
 app.use(authMiddleware);
 
@@ -45,6 +74,7 @@ app.use(generalLimiter);
 // Application routes
 app.use("/api/parts", partsRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/ebay", ebayRouter);
 // Larger body limit for OCR and upload endpoints (base64 images up to ~10MB)
 app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
 app.use("/api/appliances/upload", express.json({ limit: "12mb" }));

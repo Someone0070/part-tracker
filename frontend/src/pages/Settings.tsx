@@ -101,6 +101,12 @@ export function Settings() {
           <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">General</h2>
           <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
             <SettingRow
+              icon="sync"
+              label="Cross-references"
+              description="Auto-fetch interchangeable part numbers"
+              action={<Toggle checked={settings.crossRefEnabled} onChange={(v) => updateSetting("crossRefEnabled", v)} />}
+            />
+            <SettingRow
               icon="dark_mode"
               label="Dark mode"
               description="Switch to dark theme"
@@ -108,6 +114,9 @@ export function Settings() {
             />
           </div>
         </section>
+
+        {/* eBay */}
+        <EbaySection settings={settings} onRefresh={fetchSettings} onUpdateSetting={updateSetting} />
 
         {/* API Key */}
         <ApiKeySection settings={settings} onRefresh={fetchSettings} />
@@ -162,6 +171,90 @@ export function Settings() {
       />
 
     </>
+  );
+}
+
+function EbaySection({ settings, onRefresh, onUpdateSetting }: { settings: AppSettings; onRefresh: () => void; onUpdateSetting: (key: string, value: boolean) => void }) {
+  const [connecting, setConnecting] = useState(false);
+  const [showDisconnect, setShowDisconnect] = useState(false);
+
+  async function handleConnect() {
+    setConnecting(true);
+    try {
+      const data = await api<{ authUrl: string }>("/api/ebay/auth-url", { method: "POST" });
+      window.location.href = data.authUrl;
+    } catch {
+      setConnecting(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    try {
+      await api("/api/ebay/disconnect", { method: "POST" });
+      onRefresh();
+    } catch {
+      // handled by api client
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">eBay Integration</h2>
+      <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
+        {settings.ebay.connected ? (
+          <>
+            <SettingRow
+              icon="store"
+              label="eBay connected"
+              description={settings.ebay.enabled ? "Syncing active listings" : "Sync is paused"}
+              action={
+                <button
+                  onClick={() => setShowDisconnect(true)}
+                  className="text-xs text-red-600 dark:text-red-400 font-medium hover:underline"
+                >
+                  Disconnect
+                </button>
+              }
+            />
+            <SettingRow
+              icon="pause_circle"
+              label="Pause sync"
+              description="Temporarily stop eBay sync"
+              action={<Toggle checked={!settings.ebay.enabled} onChange={(v) => onUpdateSetting("ebayEnabled", !v)} />}
+            />
+          </>
+        ) : (
+          <SettingRow
+            icon="store"
+            label="Connect eBay"
+            description="Sync listings and track sold items"
+            action={
+              <button
+                onClick={handleConnect}
+                disabled={connecting}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50"
+              >
+                {connecting ? "Connecting..." : "Connect"}
+              </button>
+            }
+          />
+        )}
+      </div>
+      {!settings.ebay.connected && (
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 px-1">
+          Requires EBAY_CLIENT_ID, EBAY_CLIENT_SECRET, and EBAY_REDIRECT_URI env vars.
+        </p>
+      )}
+      <ConfirmDialog
+        open={showDisconnect}
+        onClose={() => setShowDisconnect(false)}
+        onConfirm={handleDisconnect}
+        title="Disconnect eBay"
+        message="This will stop syncing listings and remove the eBay connection. You can reconnect later."
+        confirmLabel="Disconnect"
+        destructive
+      />
+    </section>
   );
 }
 
@@ -260,18 +353,24 @@ function ApiKeySection({ settings, onRefresh }: { settings: AppSettings; onRefre
 
         <div>
           <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Scopes</p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {ALL_SCOPES.map((scope) => (
-              <label key={scope.value} className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedScopes.includes(scope.value)}
-                  onChange={() => toggleScope(scope.value)}
-                  className="rounded border-gray-300 dark:border-gray-600"
-                />
-                {scope.label}
-              </label>
-            ))}
+          <div className="flex flex-wrap gap-1.5">
+            {ALL_SCOPES.map((scope) => {
+              const active = selectedScopes.includes(scope.value);
+              return (
+                <button
+                  key={scope.value}
+                  type="button"
+                  onClick={() => toggleScope(scope.value)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
+                    active
+                      ? "bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900"
+                      : "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {scope.label}
+                </button>
+              );
+            })}
           </div>
         </div>
 

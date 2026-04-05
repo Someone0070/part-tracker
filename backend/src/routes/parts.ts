@@ -6,6 +6,7 @@ import { validateBody, addPartSchema, depletePartSchema, updatePartSchema } from
 import { addPart, depletePart, updatePartMetadata } from "../services/inventory.js";
 import { normalizePartNumber } from "../services/normalize.js";
 import { requireScope } from "../middleware/auth.js";
+import { lookupCrossReferences } from "../services/cross-ref.js";
 
 const router = Router();
 
@@ -125,6 +126,10 @@ router.post("/", requireScope("parts:write"), validateBody(addPartSchema), async
   try {
     const result = await addPart(req.body);
     res.status(201).json(partToJson(result));
+    // Fire-and-forget: cross-reference lookup
+    lookupCrossReferences(result.id, result.partNumber, result.brand).catch((err) => {
+      console.error("Cross-ref lookup failed:", err);
+    });
   } catch (err) {
     console.error("Add part error:", err);
     res.status(500).json({ error: "Internal error" });
