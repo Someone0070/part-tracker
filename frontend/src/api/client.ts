@@ -50,7 +50,12 @@ export async function api<T = unknown>(
     headers.set("Content-Type", "application/json");
   }
 
-  let res = await fetch(path, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(path, { ...options, headers });
+  } catch {
+    throw new ApiError(0, "Cannot connect to server");
+  }
 
   if (res.status === 401 && !path.includes("/api/auth/")) {
     const newToken = await getRefreshedToken();
@@ -61,8 +66,15 @@ export async function api<T = unknown>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Request failed" }));
-    throw new ApiError(res.status, body.error || "Request failed");
+    const text = await res.text();
+    let message = "Request failed";
+    try {
+      const body = JSON.parse(text);
+      message = body.error || message;
+    } catch {
+      if (text.includes("Cannot")) message = text.replace(/<[^>]*>/g, "").trim();
+    }
+    throw new ApiError(res.status, message);
   }
 
   return res.json();
