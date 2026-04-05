@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../api/client";
 import { Modal } from "../components/Modal";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DropdownMenu } from "../components/DropdownMenu";
 import { StatusBadge } from "../components/StatusBadge";
 import { Timeline } from "../components/Timeline";
@@ -55,6 +56,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
   const [depleteAction, setDepleteAction] = useState<"used" | "sold" | null>(null);
   const [depleteQty, setDepleteQty] = useState(1);
   const [depleting, setDepleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const EVENTS_LIMIT = 20;
 
@@ -124,7 +126,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
   }
 
   async function handleDelete() {
-    if (!part || !confirm(`Delete part ${part.partNumberRaw}? This cannot be undone.`)) return;
+    if (!part) return;
     try {
       await api(`/api/parts/${part.id}`, { method: "DELETE" });
       onPartChanged();
@@ -138,7 +140,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     { label: "Edit", icon: "edit", onClick: startEdit },
     { label: "Mark Used", icon: "build", onClick: () => { setDepleteQty(1); setDepleteAction("used"); } },
     { label: "Mark Sold", icon: "sell", onClick: () => { setDepleteQty(1); setDepleteAction("sold"); } },
-    { label: "Delete", icon: "delete", onClick: handleDelete, destructive: true },
+    { label: "Delete", icon: "delete", onClick: () => setShowDeleteConfirm(true), destructive: true },
   ];
 
   return (
@@ -219,6 +221,16 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
       {depleteAction && part && (
         <DepleteDialog action={depleteAction} maxQty={part.available} quantity={depleteQty} onQuantityChange={setDepleteQty} onConfirm={handleDeplete} onClose={() => setDepleteAction(null)} loading={depleting} />
       )}
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={handleDelete}
+        title="Delete part"
+        message={`Delete ${part?.partNumberRaw || "this part"}? This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+      />
     </>
   );
 }

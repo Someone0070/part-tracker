@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from "react";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { StatusBadge } from "../components/StatusBadge";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 const INPUT_CLASS =
   "w-full px-3 py-2.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 focus:border-transparent";
@@ -53,6 +54,7 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
   // Strip / delete actions
   const [stripping, setStripping] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Add part form
   const [showAddPart, setShowAddPart] = useState(false);
@@ -76,7 +78,6 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
   }, [id]);
 
   async function handleDelete() {
-    if (!confirm("Delete this appliance? Parts will be unlinked but not deleted.")) return;
     setDeleting(true);
     try {
       await api(`/api/appliances/${id}`, { method: "DELETE" });
@@ -218,13 +219,23 @@ export function ApplianceDetail({ id, onBack }: ApplianceDetailProps) {
           </button>
         )}
         <button
-          onClick={handleDelete}
+          onClick={() => setShowDeleteConfirm(true)}
           disabled={deleting}
           className="px-3 py-2.5 text-sm font-medium rounded-lg text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
         >
           {deleting ? "..." : "Delete"}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={handleDelete}
+        title="Delete appliance"
+        message="Delete this appliance? Parts will be unlinked but not deleted."
+        confirmLabel="Delete"
+        destructive
+      />
 
       {/* Parts pulled section */}
       <div className="mb-3 flex items-center justify-between">

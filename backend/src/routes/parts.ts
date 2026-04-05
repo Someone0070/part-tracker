@@ -53,7 +53,8 @@ router.get("/lookup", requireScope("parts:read"), async (req, res) => {
     const alternatives = await findAlternatives(db, normalized);
 
     res.json({
-      exact: exactMatch ? partToJson(exactMatch) : null,
+      found: !!exactMatch,
+      part: exactMatch ? partToJson(exactMatch) : null,
       alternatives,
     });
   } catch (err) {
