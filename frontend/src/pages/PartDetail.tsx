@@ -123,10 +123,22 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     setEditing(true);
   }
 
+  async function handleDelete() {
+    if (!part || !confirm(`Delete part ${part.partNumberRaw}? This cannot be undone.`)) return;
+    try {
+      await api(`/api/parts/${part.id}`, { method: "DELETE" });
+      onPartChanged();
+      onClose();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete");
+    }
+  }
+
   const menuItems = [
     { label: "Edit", icon: "edit", onClick: startEdit },
     { label: "Mark Used", icon: "build", onClick: () => { setDepleteQty(1); setDepleteAction("used"); } },
     { label: "Mark Sold", icon: "sell", onClick: () => { setDepleteQty(1); setDepleteAction("sold"); } },
+    { label: "Delete", icon: "delete", onClick: handleDelete, destructive: true },
   ];
 
   return (
