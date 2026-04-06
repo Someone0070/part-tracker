@@ -4,7 +4,7 @@ import { Icon } from "./Icon";
 const tabs = [
   { path: "/", icon: "inventory_2", label: "Catalog" },
   { path: "/disassemble", icon: "handyman", label: "Disassemble" },
-  { path: "/add", icon: "add_circle", label: "Add Part" },
+  { path: "/?add=1", icon: "add_circle", label: "Add Part" },
   { path: "/settings", icon: "settings", label: "Settings" },
 ] as const;
 
@@ -17,9 +17,11 @@ export function BottomNav() {
       <div className="flex items-center justify-around h-14 max-w-lg mx-auto">
         {tabs.map((tab) => {
           const isActive =
-            tab.path === "/"
-              ? location.pathname === "/"
-              : location.pathname.startsWith(tab.path);
+            tab.path === "/?add=1"
+              ? false
+              : tab.path === "/"
+                ? location.pathname === "/"
+                : location.pathname.startsWith(tab.path);
 
           return (
             <button
