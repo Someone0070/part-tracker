@@ -8,6 +8,7 @@ import { Catalog } from "./pages/Catalog";
 import { Settings } from "./pages/Settings";
 import { Disassemble } from "./pages/Disassemble";
 import { NewAppliance } from "./pages/NewAppliance";
+import { AddPartPage } from "./pages/AddPartPage";
 
 function AppRoutes() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -36,6 +37,7 @@ function AppRoutes() {
         <Route path="/disassemble" element={<Disassemble />} />
         <Route path="/disassemble/new" element={<NewAppliance />} />
         <Route path="/disassemble/:id" element={<Disassemble />} />
+        <Route path="/add" element={<AddPartPage />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

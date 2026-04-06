@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { StatusBadge } from "../components/StatusBadge";
@@ -26,15 +25,6 @@ export function Catalog() {
   const [loading, setLoading] = useState(true);
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
   const [showAddPart, setShowAddPart] = useState(false);
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  // Open modal when navigated to /?add=1 (from bottom nav)
-  useEffect(() => {
-    if (searchParams.get("add") === "1") {
-      setShowAddPart(true);
-      setSearchParams({}, { replace: true });
-    }
-  }, [searchParams, setSearchParams]);
 
   const fetchParts = useCallback(async () => {
     setLoading(true);
