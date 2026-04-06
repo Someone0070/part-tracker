@@ -85,7 +85,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     if (loadingEvents || !hasMoreEvents) return;
     setLoadingEvents(true);
     try {
-      const data = await api<{ part: Part; crossReferences: CrossRef[]; events: TimelineEvent[] }>(`/api/parts/${partId}?eventsLimit=${EVENTS_LIMIT}&eventsOffset=${events.length}`);
+      const data = await api<{ events: TimelineEvent[] }>(`/api/parts/${partId}/events?limit=${EVENTS_LIMIT}&offset=${events.length}`);
       setEvents((prev) => [...prev, ...data.events]);
       setHasMoreEvents(data.events.length >= EVENTS_LIMIT);
     } finally {

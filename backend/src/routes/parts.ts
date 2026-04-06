@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getDb } from "../db/index.js";
 import { parts, crossReferences, inventoryEvents } from "../db/schema.js";
-import { eq, ilike, sql, desc, or, and, gt } from "drizzle-orm";
+import { eq, ilike, sql, desc, or, and, gt, inArray } from "drizzle-orm";
 import { validateBody, addPartSchema, depletePartSchema, updatePartSchema } from "../middleware/validate.js";
 import { addPart, depletePart, updatePartMetadata } from "../services/inventory.js";
 import { normalizePartNumber } from "../services/normalize.js";
@@ -81,23 +81,29 @@ router.get("/:id", requireScope("parts:read"), async (req, res) => {
       .from(crossReferences)
       .where(eq(crossReferences.partId, part.id));
 
-    // Check which cross-ref parts are in stock
-    const crossRefsWithStock = await Promise.all(
-      crossRefs.map(async (ref) => {
-        const normalized = normalizePartNumber(ref.crossRefPartNumber);
-        const [stockPart] = await db
-          .select({ quantity: parts.quantity })
-          .from(parts)
-          .where(eq(parts.partNumber, normalized))
-          .limit(1);
-        return {
-          crossRefPartNumber: ref.crossRefPartNumber,
-          relationship: ref.relationship,
-          inStock: !!stockPart && stockPart.quantity > 0,
-          quantity: stockPart?.quantity ?? 0,
-        };
-      })
-    );
+    // Batch lookup cross-ref stock levels
+    const normalizedRefs = crossRefs.map((r) => normalizePartNumber(r.crossRefPartNumber));
+    const uniqueNormalized = [...new Set(normalizedRefs)].filter(Boolean);
+    const stockMap = new Map<string, number>();
+    if (uniqueNormalized.length > 0) {
+      const stockParts = await db
+        .select({ partNumber: parts.partNumber, quantity: parts.quantity })
+        .from(parts)
+        .where(inArray(parts.partNumber, uniqueNormalized));
+      for (const sp of stockParts) {
+        stockMap.set(sp.partNumber, sp.quantity);
+      }
+    }
+    const crossRefsWithStock = crossRefs.map((ref) => {
+      const norm = normalizePartNumber(ref.crossRefPartNumber);
+      const qty = stockMap.get(norm) ?? 0;
+      return {
+        crossRefPartNumber: ref.crossRefPartNumber,
+        relationship: ref.relationship,
+        inStock: qty > 0,
+        quantity: qty,
+      };
+    });
 
     // Get events (paginated)
     const limit = parseInt(String(req.query.eventsLimit)) || 20;
@@ -118,6 +124,29 @@ router.get("/:id", requireScope("parts:read"), async (req, res) => {
     });
   } catch (err) {
     console.error("Get part error:", err);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
+// GET /api/parts/:id/events — paginated events only
+router.get("/:id/events", requireScope("parts:read"), async (req, res) => {
+  try {
+    const db = getDb();
+    const id = parseInt((req.params as Record<string, string>)["id"], 10);
+    const limit = parseInt(String(req.query.limit)) || 20;
+    const offset = parseInt(String(req.query.offset)) || 0;
+
+    const events = await db
+      .select()
+      .from(inventoryEvents)
+      .where(eq(inventoryEvents.partId, id))
+      .orderBy(desc(inventoryEvents.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    res.json({ events: events.map(eventToJson) });
+  } catch (err) {
+    console.error("Get events error:", err);
     res.status(500).json({ error: "Internal error" });
   }
 });
@@ -259,35 +288,52 @@ async function findAlternatives(db: ReturnType<typeof getDb>, normalizedPartNumb
   const seen = new Set<string>([normalizedPartNumber]);
   const alternatives: Array<{ partNumber: string; relationship: string; quantity: number; available: number }> = [];
 
-  for (const ref of forward) {
-    const norm = normalizePartNumber(ref.crossRefPartNumber);
-    if (seen.has(norm)) continue;
-    seen.add(norm);
+  // Batch forward lookups
+  const forwardNorms = forward
+    .map((r) => normalizePartNumber(r.crossRefPartNumber))
+    .filter((n) => !seen.has(n));
+  for (const n of forwardNorms) seen.add(n);
 
-    const [stockPart] = await db.select().from(parts).where(eq(parts.partNumber, norm)).limit(1);
-    if (stockPart && stockPart.quantity > 0) {
-      alternatives.push({
-        partNumber: stockPart.partNumber,
-        relationship: ref.relationship,
-        quantity: stockPart.quantity,
-        available: stockPart.quantity - stockPart.listedQuantity,
-      });
+  if (forwardNorms.length > 0) {
+    const stockParts = await db
+      .select()
+      .from(parts)
+      .where(inArray(parts.partNumber, [...new Set(forwardNorms)]));
+    const stockByNumber = new Map(stockParts.map((p) => [p.partNumber, p]));
+    for (const ref of forward) {
+      const norm = normalizePartNumber(ref.crossRefPartNumber);
+      const stockPart = stockByNumber.get(norm);
+      if (stockPart && stockPart.quantity > 0) {
+        alternatives.push({
+          partNumber: stockPart.partNumber,
+          relationship: ref.relationship,
+          quantity: stockPart.quantity,
+          available: stockPart.quantity - stockPart.listedQuantity,
+        });
+      }
     }
   }
 
-  for (const ref of reverse) {
-    const [refPart] = await db.select().from(parts).where(eq(parts.id, ref.partId)).limit(1);
-    if (!refPart) continue;
-    if (seen.has(refPart.partNumber)) continue;
-    seen.add(refPart.partNumber);
-
-    if (refPart.quantity > 0) {
-      alternatives.push({
-        partNumber: refPart.partNumber,
-        relationship: ref.relationship,
-        quantity: refPart.quantity,
-        available: refPart.quantity - refPart.listedQuantity,
-      });
+  // Batch reverse lookups
+  const reverseIds = reverse.map((r) => r.partId);
+  if (reverseIds.length > 0) {
+    const refParts = await db
+      .select()
+      .from(parts)
+      .where(inArray(parts.id, reverseIds));
+    const partsById = new Map(refParts.map((p) => [p.id, p]));
+    for (const ref of reverse) {
+      const refPart = partsById.get(ref.partId);
+      if (!refPart || seen.has(refPart.partNumber)) continue;
+      seen.add(refPart.partNumber);
+      if (refPart.quantity > 0) {
+        alternatives.push({
+          partNumber: refPart.partNumber,
+          relationship: ref.relationship,
+          quantity: refPart.quantity,
+          available: refPart.quantity - refPart.listedQuantity,
+        });
+      }
     }
   }
 

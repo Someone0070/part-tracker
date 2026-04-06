@@ -19,6 +19,32 @@ declare global {
   }
 }
 
+// Short-lived cache to avoid DB reads on every request
+const AUTH_CACHE_TTL = 30_000; // 30 seconds
+let authCache: { apiKeyHash: string | null; apiKeyScopes: string | null; passwordVersion: number; fetchedAt: number } | null = null;
+
+async function getCachedAuthSettings() {
+  if (authCache && Date.now() - authCache.fetchedAt < AUTH_CACHE_TTL) {
+    return authCache;
+  }
+  const db = getDb();
+  const [row] = await db
+    .select({
+      apiKeyHash: settings.apiKeyHash,
+      apiKeyScopes: settings.apiKeyScopes,
+      passwordVersion: settings.passwordVersion,
+    })
+    .from(settings)
+    .limit(1);
+  if (!row) return null;
+  authCache = { ...row, fetchedAt: Date.now() };
+  return authCache;
+}
+
+export function invalidateAuthCache() {
+  authCache = null;
+}
+
 const EXEMPT_PATHS = [
   "/api/auth/verify",
   "/api/auth/refresh",
@@ -101,30 +127,21 @@ export function requireScope(scope: string) {
 }
 
 async function validateApiKey(key: string): Promise<string[] | null> {
-  const db = getDb();
-  const [row] = await db
-    .select({
-      apiKeyHash: settings.apiKeyHash,
-      apiKeyScopes: settings.apiKeyScopes,
-    })
-    .from(settings)
-    .limit(1);
-
-  if (!row?.apiKeyHash) return null;
+  const cached = await getCachedAuthSettings();
+  if (!cached?.apiKeyHash) return null;
 
   const hash = crypto.createHash("sha256").update(key).digest("hex");
-  if (hash !== row.apiKeyHash) return null;
+  if (hash !== cached.apiKeyHash) return null;
 
   try {
-    return JSON.parse(row.apiKeyScopes || "[]");
+    return JSON.parse(cached.apiKeyScopes || "[]");
   } catch {
     return [];
   }
 }
 
 async function checkPasswordVersion(pv: number): Promise<boolean> {
-  const db = getDb();
-  const [row] = await db.select({ passwordVersion: settings.passwordVersion }).from(settings).limit(1);
-  if (!row) return false;
-  return row.passwordVersion === pv;
+  const cached = await getCachedAuthSettings();
+  if (!cached) return false;
+  return cached.passwordVersion === pv;
 }

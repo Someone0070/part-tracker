@@ -1,6 +1,7 @@
 import { Router } from "express";
 import crypto from "crypto";
 import { getDb } from "../db/index.js";
+import { invalidateAuthCache } from "../middleware/auth.js";
 import { settings, ebayProcessedOrders } from "../db/schema.js";
 import { eq, isNotNull, sql } from "drizzle-orm";
 import { validateBody, updateSettingsSchema } from "../middleware/validate.js";
@@ -109,6 +110,7 @@ router.post("/api-key", async (req, res) => {
       })
       .where(eq(settings.id, row.id));
 
+    invalidateAuthCache();
     res.json({ key, prefix, scopes });
   } catch (err) {
     console.error("Generate API key error:", err);
@@ -135,6 +137,7 @@ router.delete("/api-key", async (req, res) => {
       })
       .where(eq(settings.id, row.id));
 
+    invalidateAuthCache();
     res.json({ ok: true });
   } catch (err) {
     console.error("Revoke API key error:", err);

@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import { getDb } from "../db/index.js";
+import { invalidateAuthCache } from "../middleware/auth.js";
 import { settings, sessions } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
 import { validateBody, loginSchema, changePasswordSchema } from "../middleware/validate.js";
@@ -135,6 +136,7 @@ router.post("/change-password", validateBody(changePasswordSchema), async (req, 
       .where(eq(settings.id, row.id));
 
     await db.delete(sessions);
+    invalidateAuthCache();
 
     res.clearCookie("refresh_token", { path: "/api/auth" });
     res.json({ ok: true });

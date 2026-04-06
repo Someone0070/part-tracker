@@ -209,7 +209,7 @@ async function fetchOrders(
 async function processLineItem(
   orderId: string,
   lineItem: { lineItemId: string; legacyItemId: string; quantity: number },
-): Promise<void> {
+): Promise<"processed" | "quarantined" | "skipped"> {
   const db = getDb();
 
   const [existing] = await db
@@ -223,9 +223,9 @@ async function processLineItem(
     )
     .limit(1);
 
-  if (existing) return;
+  if (existing) return "skipped";
 
-  await db.transaction(async (tx) => {
+  return await db.transaction(async (tx) => {
     const [part] = await tx
       .select()
       .from(parts)
@@ -241,7 +241,7 @@ async function processLineItem(
         quarantineReason: `No matching listing for eBay item ${lineItem.legacyItemId}`,
       });
       console.warn(`Quarantined: order ${orderId} line ${lineItem.lineItemId} — no matching listing ${lineItem.legacyItemId}`);
-      return;
+      return "quarantined";
     }
 
     const newQuantity = part.quantity - lineItem.quantity;
@@ -256,7 +256,7 @@ async function processLineItem(
         quarantineReason: `Invariant violation: quantity=${part.quantity}, listedQuantity=${part.listedQuantity}, sold=${lineItem.quantity}`,
       });
       console.warn(`Quarantined: order ${orderId} line ${lineItem.lineItemId} — invariant violation on part ${part.id}`);
-      return;
+      return "quarantined";
     }
 
     await tx
@@ -285,6 +285,7 @@ async function processLineItem(
     });
 
     console.log(`Processed: order ${orderId} line ${lineItem.lineItemId} — depleted ${lineItem.quantity} of part ${part.id}`);
+    return "processed";
   });
 }
 
@@ -313,24 +314,9 @@ export async function pollEbayOrders(): Promise<{ processed: number; quarantined
 
   for (const order of orders) {
     for (const lineItem of order.lineItems) {
-      await processLineItem(order.orderId, lineItem);
-
-      const [record] = await db
-        .select({ quarantineReason: ebayProcessedOrders.quarantineReason })
-        .from(ebayProcessedOrders)
-        .where(
-          and(
-            eq(ebayProcessedOrders.ebayOrderId, order.orderId),
-            eq(ebayProcessedOrders.ebayLineItemId, lineItem.lineItemId),
-          ),
-        )
-        .limit(1);
-
-      if (record?.quarantineReason) {
-        quarantined++;
-      } else {
-        processed++;
-      }
+      const status = await processLineItem(order.orderId, lineItem);
+      if (status === "processed") processed++;
+      else if (status === "quarantined") quarantined++;
     }
   }
 

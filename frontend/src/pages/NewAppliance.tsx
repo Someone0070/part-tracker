@@ -63,7 +63,7 @@ export function NewAppliance() {
     setOcrLoading(true);
     try {
       const base64 = await fileToBase64(file);
-      const result = await api<{ brand?: string; model?: string; serial?: string }>(
+      const result = await api<{ brand?: string; modelNumber?: string; serialNumber?: string }>(
         "/api/appliances/ocr",
         {
           method: "POST",
@@ -71,8 +71,8 @@ export function NewAppliance() {
         }
       );
       if (result.brand) setBrand(result.brand);
-      if (result.model) setModel(result.model);
-      if (result.serial) setSerial(result.serial);
+      if (result.modelNumber) setModel(result.modelNumber);
+      if (result.serialNumber) setSerial(result.serialNumber);
       setStickerDone(true);
     } catch (err: any) {
       setOcrError(err.message || "OCR failed");
@@ -93,16 +93,16 @@ export function NewAppliance() {
     setPhotoWarning("");
     setSubmitting(true);
 
-    let photoUrl: string | undefined;
+    let photoKey: string | undefined;
 
     // Try uploading unit photo
     if (unitPhotoBase64) {
       try {
-        const result = await api<{ url: string }>("/api/appliances/upload", {
+        const result = await api<{ key: string }>("/api/appliances/upload", {
           method: "POST",
           body: JSON.stringify({ image: unitPhotoBase64 }),
         });
-        photoUrl = result.url;
+        photoKey = result.key;
       } catch (err: any) {
         if (err instanceof ApiError && err.status === 503) {
           setPhotoWarning("Photo storage not configured — appliance will be created without photo.");
@@ -117,11 +117,11 @@ export function NewAppliance() {
         method: "POST",
         body: JSON.stringify({
           brand: brand.trim() || undefined,
-          model: model.trim() || undefined,
+          modelNumber: model.trim() || undefined,
           serialNumber: serial.trim() || undefined,
-          type: type || undefined,
+          applianceType: type || undefined,
           notes: notes.trim() || undefined,
-          photoUrl,
+          photoKey,
         }),
       });
       navigate(`/disassemble/${result.id}`);

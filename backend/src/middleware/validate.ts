@@ -15,8 +15,8 @@ export const depletePartSchema = z.object({
 });
 
 export const updatePartSchema = z.object({
-  brand: z.string().max(100).optional(),
-  description: z.string().max(500).optional(),
+  brand: z.string().max(100).optional().nullable(),
+  description: z.string().max(500).optional().nullable(),
   ebayListingId: z.string().optional().nullable(),
   listedQuantity: z.number().int().min(0).optional(),
 });
