@@ -39,6 +39,41 @@ API keys do not grant access to auth, settings, or eBay endpoints — those requ
 
 ---
 
+## Error Responses
+
+All errors return JSON with an `error` field:
+
+```json
+{
+  "error": "Human-readable error message"
+}
+```
+
+Validation errors (from request body validation) include field-level details:
+
+```json
+{
+  "error": "Validation failed",
+  "details": {
+    "partNumber": ["Required"],
+    "quantity": ["Expected number, received string"]
+  }
+}
+```
+
+### Common Status Codes
+
+| Code  | Meaning                                                                 |
+|-------|-------------------------------------------------------------------------|
+| `400` | Bad request — missing required fields, validation failure, or invalid operation (e.g. depleting more than available) |
+| `401` | Unauthorized — missing/invalid/expired token or API key                |
+| `403` | Forbidden — API key lacks the required scope, or proxy secret mismatch |
+| `404` | Resource not found                                                      |
+| `503` | Service not configured — OCR (ZAI_API_KEY) or R2 storage missing      |
+| `500` | Internal server error                                                   |
+
+---
+
 ## Auth
 
 ### POST /api/auth/verify
@@ -60,6 +95,13 @@ No auth required.
   "accessToken": "eyJ..."
 }
 ```
+
+**Errors:**
+
+| Code  | Error                       |
+|-------|-----------------------------|
+| `401` | `Invalid password`          |
+| `500` | `Settings not initialized`  |
 
 ---
 
@@ -112,7 +154,11 @@ Changes the password. Invalidates all existing sessions (including all refresh t
 { "ok": true }
 ```
 
-Returns `401` if `currentPassword` is wrong.
+**Errors:**
+
+| Code  | Error                          |
+|-------|--------------------------------|
+| `401` | `Current password is incorrect`|
 
 ---
 
@@ -160,6 +206,12 @@ Look up a part by part number. Returns the exact match (if any) plus in-stock al
 ```
 
 When the part number is not found in inventory, `found` is `false` and `part` is `null`. Alternatives may still be present if cross-reference data links to in-stock parts.
+
+**Errors:**
+
+| Code  | Error                          |
+|-------|--------------------------------|
+| `400` | `partNumber query param required` |
 
 ---
 
@@ -216,6 +268,12 @@ Get a single part with its cross-references and inventory event history.
 }
 ```
 
+**Errors:**
+
+| Code  | Error            |
+|-------|------------------|
+| `404` | `Part not found` |
+
 ---
 
 ### POST /api/parts
@@ -257,6 +315,15 @@ Update part metadata. Does not affect quantity.
 
 **Response:** Updated part object.
 
+**Errors:**
+
+| Code  | Error                                                             |
+|-------|-------------------------------------------------------------------|
+| `404` | `Part not found`                                                  |
+| `400` | `listed_quantity must be between 0 and {quantity}`                |
+| `400` | `ebay_listing_id required when listed_quantity > 0`              |
+| `400` | `ebay_listing_id must be null when listed_quantity is 0`         |
+
 ---
 
 ### POST /api/parts/:id/deplete
@@ -275,7 +342,12 @@ Reduce inventory for a part (used in repair or sold outside eBay).
 
 **Response:** Updated part object.
 
-Returns `400` if depletion would push quantity below zero.
+**Errors:**
+
+| Code  | Error                                                                                           |
+|-------|-------------------------------------------------------------------------------------------------|
+| `404` | `Part not found`                                                                                |
+| `400` | `Cannot deplete {n} -- only {available} available ({listed} listed on eBay)` |
 
 ---
 
@@ -289,6 +361,12 @@ Delete a part and all associated cross-references and inventory events.
 ```json
 { "ok": true }
 ```
+
+**Errors:**
+
+| Code  | Error            |
+|-------|------------------|
+| `404` | `Part not found` |
 
 ---
 
@@ -335,6 +413,12 @@ Get a single appliance with its linked parts.
   "parts": [ ... ]
 }
 ```
+
+**Errors:**
+
+| Code  | Error                 |
+|-------|-----------------------|
+| `404` | `Appliance not found` |
 
 ---
 
@@ -394,6 +478,12 @@ Delete an appliance. Parts linked to it are unlinked (not deleted).
 { "ok": true }
 ```
 
+**Errors:**
+
+| Code  | Error                 |
+|-------|-----------------------|
+| `404` | `Appliance not found` |
+
 ---
 
 ### POST /api/appliances/:id/parts
@@ -432,7 +522,13 @@ Extract model number and serial number from a sticker photo using AI vision. Sen
 
 **Response:** Extracted appliance info (fields vary based on what's visible in the image).
 
-Returns `503` if the OCR service is not configured.
+**Errors:**
+
+| Code  | Error                                   |
+|-------|-----------------------------------------|
+| `400` | `image must be a base64 string`         |
+| `400` | `image exceeds 10MB limit`              |
+| `503` | `OCR service not configured`            |
 
 ---
 
@@ -457,7 +553,13 @@ Upload a photo to R2 storage. Returns a `key` that can be passed as `photoKey` w
 }
 ```
 
-Returns `503` if R2 storage is not configured.
+**Errors:**
+
+| Code  | Error                                     |
+|-------|-------------------------------------------|
+| `400` | `image (base64 string) required`          |
+| `400` | `Image too large (max 10MB)`              |
+| `503` | `R2 storage is not configured`            |
 
 ---
 
@@ -527,6 +629,13 @@ Generate (or regenerate) an API key with the specified scopes. Replaces any exis
 ```
 
 At least one scope is required. Valid values: `parts:read`, `parts:write`, `appliances:read`, `appliances:write`.
+
+**Errors:**
+
+| Code  | Error                            |
+|-------|----------------------------------|
+| `400` | `At least one scope is required` |
+| `400` | `Invalid scopes: {list}`         |
 
 **Response:**
 ```json

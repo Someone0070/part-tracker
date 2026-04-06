@@ -5,7 +5,6 @@ import { api } from "./api/client";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Catalog } from "./pages/Catalog";
-import { AddPart } from "./pages/AddPart";
 import { Settings } from "./pages/Settings";
 import { Disassemble } from "./pages/Disassemble";
 import { NewAppliance } from "./pages/NewAppliance";
@@ -37,7 +36,6 @@ function AppRoutes() {
         <Route path="/disassemble" element={<Disassemble />} />
         <Route path="/disassemble/new" element={<NewAppliance />} />
         <Route path="/disassemble/:id" element={<Disassemble />} />
-        <Route path="/add" element={<AddPart />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
