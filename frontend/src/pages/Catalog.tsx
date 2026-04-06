@@ -31,12 +31,7 @@ export function Catalog() {
     try {
       const params = search ? `?search=${encodeURIComponent(search)}` : "";
       const data = await api<Part[]>(`/api/parts${params}`);
-      const sorted = [...data].sort((a, b) => {
-        if (a.quantity === 0 && b.quantity > 0) return 1;
-        if (a.quantity > 0 && b.quantity === 0) return -1;
-        return 0;
-      });
-      setParts(sorted);
+      setParts(data);
     } catch {
       // stay on empty state
     } finally {

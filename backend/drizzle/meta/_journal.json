@@ -22,6 +22,13 @@
       "when": 1775429837112,
       "tag": "0002_noisy_skrulls",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775510400000,
+      "tag": "0003_add_trgm_index",
+      "breakpoints": true
     }
   ]
 }

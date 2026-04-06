@@ -10,11 +10,13 @@ import { lookupCrossReferences } from "../services/cross-ref.js";
 
 const router = Router();
 
-// GET /api/parts — list all, optional search
+// GET /api/parts — list with optional search, server-side pagination & sorting
 router.get("/", requireScope("parts:read"), async (req, res) => {
   try {
     const db = getDb();
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
+    const limit = Math.min(parseInt(String(req.query.limit)) || 100, 500);
+    const offset = parseInt(String(req.query.offset)) || 0;
 
     let query = db.select().from(parts);
     if (search) {
@@ -22,7 +24,11 @@ router.get("/", requireScope("parts:read"), async (req, res) => {
       query = query.where(ilike(parts.partNumber, `%${normalized}%`)) as typeof query;
     }
 
-    const results = await query.orderBy(desc(parts.updatedAt));
+    // Sort: out-of-stock to bottom, then by most recently updated
+    const results = await query
+      .orderBy(sql`CASE WHEN ${parts.quantity} = 0 THEN 1 ELSE 0 END`, desc(parts.updatedAt))
+      .limit(limit)
+      .offset(offset);
     res.json(results.map(partToJson));
   } catch (err) {
     console.error("List parts error:", err);
