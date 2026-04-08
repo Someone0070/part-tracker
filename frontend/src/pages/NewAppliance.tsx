@@ -63,7 +63,7 @@ export function NewAppliance() {
     setOcrLoading(true);
     try {
       const base64 = await fileToBase64(file);
-      const result = await api<{ brand?: string; modelNumber?: string; serialNumber?: string }>(
+      const result = await api<{ brand?: string; modelNumber?: string; serialNumber?: string; applianceType?: string }>(
         "/api/appliances/ocr",
         {
           method: "POST",
@@ -73,6 +73,7 @@ export function NewAppliance() {
       if (result.brand) setBrand(result.brand);
       if (result.modelNumber) setModel(result.modelNumber);
       if (result.serialNumber) setSerial(result.serialNumber);
+      if (result.applianceType) setType(result.applianceType);
       setStickerDone(true);
     } catch (err: any) {
       setOcrError(err.message || "OCR failed");
