@@ -8,6 +8,7 @@ import { normalizePartNumber } from "../services/normalize.js";
 import { requireScope } from "../middleware/auth.js";
 import { lookupCrossReferences } from "../services/cross-ref.js";
 import { extractPartInfo } from "../services/ocr.js";
+import { parseDocument } from "../services/document-parser.js";
 
 const router = Router();
 
@@ -37,6 +38,34 @@ router.post("/ocr", requireScope("parts:write"), async (req, res) => {
     }
     console.error("Part OCR error:", err);
     res.status(500).json({ error: "OCR failed" });
+  }
+});
+
+// POST /api/parts/import — extract parts from PDF document
+router.post("/import", requireScope("parts:write"), async (req, res) => {
+  const { document } = req.body as { document?: unknown };
+
+  if (typeof document !== "string") {
+    res.status(400).json({ error: "document must be a base64 string" });
+    return;
+  }
+
+  if (document.length > 10 * 1024 * 1024) {
+    res.status(400).json({ error: "document exceeds 10MB limit" });
+    return;
+  }
+
+  try {
+    const result = await parseDocument(document);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("empty or image-only")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error("Document import error:", err);
+    res.status(500).json({ error: "Failed to parse document" });
   }
 });
 
