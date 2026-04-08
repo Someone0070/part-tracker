@@ -1,10 +1,368 @@
+import { useState, useRef, useCallback, type ChangeEvent } from "react";
+import { api } from "../api/client";
+import { Icon } from "../components/Icon";
 import { AddPartForm } from "../components/AddPartForm";
 
+type Tab = "manual" | "scan" | "bulk";
+
+interface ScannedPart {
+  id: string;
+  partNumber: string;
+  brand: string;
+  description: string;
+  status: "pending" | "adding" | "added" | "error";
+  error?: string;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// --- Scan Tab: single photo -> auto-fill form ---
+
+function ScanTab() {
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [scanned, setScanned] = useState(false);
+  const [partNumber, setPartNumber] = useState("");
+  const [brand, setBrand] = useState("");
+  const [description, setDescription] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function handleCapture(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanError("");
+    setScanning(true);
+    try {
+      const base64 = await fileToBase64(file);
+      const result = await api<{ partNumber?: string; brand?: string; description?: string }>(
+        "/api/parts/ocr",
+        { method: "POST", body: JSON.stringify({ image: base64 }) }
+      );
+      setPartNumber(result.partNumber ?? "");
+      setBrand(result.brand ?? "");
+      setDescription(result.description ?? "");
+      setScanned(true);
+    } catch (err: any) {
+      setScanError(err.message || "OCR failed");
+    } finally {
+      setScanning(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  function reset() {
+    setScanned(false);
+    setPartNumber("");
+    setBrand("");
+    setDescription("");
+    setScanError("");
+  }
+
+  if (!scanned) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Take a photo of the part label to auto-fill the part number.
+        </p>
+        {scanError && (
+          <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
+            {scanError}
+          </div>
+        )}
+        {scanning ? (
+          <div className="flex items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
+            <Icon name="hourglass_top" size={18} className="animate-spin" />
+            Analyzing photo...
+          </div>
+        ) : (
+          <label className="flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+            <Icon name="photo_camera" size={28} className="text-gray-400 dark:text-gray-500" />
+            <span className="text-sm text-gray-600 dark:text-gray-300">Tap to take photo or choose from gallery</span>
+            <input
+              ref={inputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="sr-only"
+              onChange={handleCapture}
+            />
+          </label>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="px-3 py-2 rounded-lg bg-green-50 dark:bg-green-900/20 text-sm text-green-700 dark:text-green-400 flex-1">
+          Part detected — edit fields below if needed.
+        </div>
+        <button
+          type="button"
+          onClick={reset}
+          className="ml-2 p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+          title="Scan another"
+        >
+          <Icon name="refresh" size={18} />
+        </button>
+      </div>
+      <AddPartForm
+        keepOpen
+        initialPartNumber={partNumber}
+        initialBrand={brand}
+        initialDescription={description}
+        onSuccess={reset}
+      />
+    </div>
+  );
+}
+
+// --- Bulk Scan Tab: multi-select from gallery -> queue ---
+
+function BulkScanTab() {
+  const [parts, setParts] = useState<ScannedPart[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFiles(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    setScanning(true);
+    setScanProgress({ done: 0, total: files.length });
+
+    const results: ScannedPart[] = [];
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const base64 = await fileToBase64(files[i]);
+        const result = await api<{ partNumber?: string; brand?: string; description?: string }>(
+          "/api/parts/ocr",
+          { method: "POST", body: JSON.stringify({ image: base64 }) }
+        );
+        results.push({
+          id: crypto.randomUUID(),
+          partNumber: result.partNumber ?? "",
+          brand: result.brand ?? "",
+          description: result.description ?? "",
+          status: "pending",
+        });
+      } catch {
+        results.push({
+          id: crypto.randomUUID(),
+          partNumber: "",
+          brand: "",
+          description: "",
+          status: "error",
+          error: `Failed to scan ${files[i].name}`,
+        });
+      }
+      setScanProgress({ done: i + 1, total: files.length });
+    }
+
+    setParts((prev) => [...prev, ...results]);
+    setScanning(false);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function removePart(id: string) {
+    setParts((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function updatePart(id: string, field: keyof Pick<ScannedPart, "partNumber" | "brand">, value: string) {
+    setParts((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+  }
+
+  const addAll = useCallback(async () => {
+    const pending = parts.filter((p) => p.status === "pending" && p.partNumber.trim());
+    if (pending.length === 0) return;
+
+    for (const part of pending) {
+      setParts((prev) => prev.map((p) => (p.id === part.id ? { ...p, status: "adding" } : p)));
+      try {
+        await api("/api/parts", {
+          method: "POST",
+          body: JSON.stringify({
+            partNumber: part.partNumber.trim(),
+            brand: part.brand.trim() || undefined,
+            description: part.description.trim() || undefined,
+            quantity: 1,
+          }),
+        });
+        setParts((prev) => prev.map((p) => (p.id === part.id ? { ...p, status: "added" } : p)));
+      } catch (err: any) {
+        setParts((prev) =>
+          prev.map((p) => (p.id === part.id ? { ...p, status: "error", error: err.message || "Failed" } : p))
+        );
+      }
+    }
+  }, [parts]);
+
+  const pendingCount = parts.filter((p) => p.status === "pending" && p.partNumber.trim()).length;
+  const addedCount = parts.filter((p) => p.status === "added").length;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Select multiple photos from your gallery. Each will be scanned for a part number.
+      </p>
+
+      {scanning ? (
+        <div className="flex items-center justify-center gap-2 px-4 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
+          <Icon name="hourglass_top" size={18} className="animate-spin" />
+          Scanning {scanProgress.done}/{scanProgress.total}...
+        </div>
+      ) : (
+        <label className="flex items-center justify-center gap-2 px-4 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+          <Icon name="add_photo_alternate" size={24} className="text-gray-400 dark:text-gray-500" />
+          <span className="text-sm text-gray-600 dark:text-gray-300">
+            {parts.length > 0 ? "Add more photos" : "Select photos from gallery"}
+          </span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="sr-only"
+            onChange={handleFiles}
+          />
+        </label>
+      )}
+
+      {parts.length > 0 && (
+        <>
+          <div className="space-y-2">
+            {parts.map((part) => (
+              <div
+                key={part.id}
+                className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border ${
+                  part.status === "added"
+                    ? "border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20"
+                    : part.status === "error"
+                    ? "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20"
+                    : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900"
+                }`}
+              >
+                {part.status === "added" ? (
+                  <Icon name="check_circle" size={18} className="text-green-600 dark:text-green-400 shrink-0" />
+                ) : part.status === "error" ? (
+                  <Icon name="error" size={18} className="text-red-500 dark:text-red-400 shrink-0" />
+                ) : part.status === "adding" ? (
+                  <Icon name="hourglass_top" size={18} className="text-gray-400 animate-spin shrink-0" />
+                ) : (
+                  <Icon name="label" size={18} className="text-gray-400 dark:text-gray-500 shrink-0" />
+                )}
+
+                <div className="flex-1 min-w-0">
+                  {part.status === "pending" ? (
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={part.partNumber}
+                        onChange={(e) => updatePart(part.id, "partNumber", e.target.value)}
+                        placeholder="Part number"
+                        className="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                      />
+                      <input
+                        type="text"
+                        value={part.brand}
+                        onChange={(e) => updatePart(part.id, "brand", e.target.value)}
+                        placeholder="Brand"
+                        className="w-24 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                        {part.partNumber || "(no part number)"}
+                      </span>
+                      {part.brand && (
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{part.brand}</span>
+                      )}
+                    </div>
+                  )}
+                  {part.status === "error" && part.error && (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-0.5">{part.error}</p>
+                  )}
+                </div>
+
+                {part.status === "pending" && (
+                  <button
+                    type="button"
+                    onClick={() => removePart(part.id)}
+                    className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {pendingCount > 0 && (
+            <button
+              type="button"
+              onClick={addAll}
+              className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200"
+            >
+              Add {pendingCount} part{pendingCount !== 1 ? "s" : ""} to inventory
+            </button>
+          )}
+
+          {addedCount > 0 && pendingCount === 0 && (
+            <div className="px-3 py-2.5 rounded-lg bg-green-50 dark:bg-green-900/20 text-sm text-green-700 dark:text-green-400 text-center">
+              {addedCount} part{addedCount !== 1 ? "s" : ""} added successfully
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- Main Page ---
+
 export function AddPartPage() {
+  const [tab, setTab] = useState<Tab>("manual");
+
+  const tabs: { key: Tab; label: string; icon: string }[] = [
+    { key: "manual", label: "Manual", icon: "edit" },
+    { key: "scan", label: "Scan", icon: "photo_camera" },
+    { key: "bulk", label: "Bulk Scan", icon: "add_photo_alternate" },
+  ];
+
   return (
     <div className="pt-4">
       <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-4">Add Part</h1>
-      <AddPartForm keepOpen onSuccess={() => {}} />
+
+      {/* Tab bar */}
+      <div className="flex gap-1 p-1 mb-4 rounded-lg bg-gray-100 dark:bg-gray-800">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+              tab === t.key
+                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+                : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            }`}
+          >
+            <Icon name={t.icon} size={16} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "manual" && <AddPartForm keepOpen onSuccess={() => {}} />}
+      {tab === "scan" && <ScanTab />}
+      {tab === "bulk" && <BulkScanTab />}
     </div>
   );
 }

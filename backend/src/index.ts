@@ -26,6 +26,7 @@ app.set("trust proxy", 1);
 // Body parsing — larger limit for image upload routes, then global default
 app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
 app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
+app.use("/api/parts/ocr", express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 

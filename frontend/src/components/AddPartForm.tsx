@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { api } from "../api/client";
 
 const INPUT_CLASS =
@@ -10,13 +10,21 @@ interface AddPartFormProps {
   onError?: (message: string) => void;
   /** If true, resets fields after success instead of unmounting */
   keepOpen?: boolean;
+  initialPartNumber?: string;
+  initialBrand?: string;
+  initialDescription?: string;
 }
 
-export function AddPartForm({ formId, onSuccess, onError, keepOpen }: AddPartFormProps) {
-  const [partNumber, setPartNumber] = useState("");
-  const [brand, setBrand] = useState("");
-  const [description, setDescription] = useState("");
+export function AddPartForm({ formId, onSuccess, onError, keepOpen, initialPartNumber, initialBrand, initialDescription }: AddPartFormProps) {
+  const [partNumber, setPartNumber] = useState(initialPartNumber ?? "");
+  const [brand, setBrand] = useState(initialBrand ?? "");
+  const [description, setDescription] = useState(initialDescription ?? "");
   const [note, setNote] = useState("");
+
+  // Sync when initial values change (e.g., from OCR scan)
+  useEffect(() => { if (initialPartNumber !== undefined) setPartNumber(initialPartNumber); }, [initialPartNumber]);
+  useEffect(() => { if (initialBrand !== undefined) setBrand(initialBrand); }, [initialBrand]);
+  useEffect(() => { if (initialDescription !== undefined) setDescription(initialDescription); }, [initialDescription]);
   const [quantity, setQuantity] = useState(1);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

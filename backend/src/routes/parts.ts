@@ -7,8 +7,38 @@ import { addPart, depletePart, updatePartMetadata } from "../services/inventory.
 import { normalizePartNumber } from "../services/normalize.js";
 import { requireScope } from "../middleware/auth.js";
 import { lookupCrossReferences } from "../services/cross-ref.js";
+import { extractPartInfo } from "../services/ocr.js";
 
 const router = Router();
+
+// POST /api/parts/ocr — extract part number from photo
+// MUST be before /:id routes
+router.post("/ocr", requireScope("parts:write"), async (req, res) => {
+  const { image } = req.body as { image?: unknown };
+
+  if (typeof image !== "string") {
+    res.status(400).json({ error: "image must be a base64 string" });
+    return;
+  }
+
+  if (image.length > 10 * 1024 * 1024) {
+    res.status(400).json({ error: "image exceeds 10MB limit" });
+    return;
+  }
+
+  try {
+    const result = await extractPartInfo(image);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === "not configured") {
+      res.status(503).json({ error: "OCR service not configured" });
+      return;
+    }
+    console.error("Part OCR error:", err);
+    res.status(500).json({ error: "OCR failed" });
+  }
+});
 
 // GET /api/parts — list with optional search, server-side pagination & sorting
 router.get("/", requireScope("parts:read"), async (req, res) => {
