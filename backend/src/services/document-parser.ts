@@ -80,58 +80,69 @@ function parseAmazon(text: string): DocumentResult {
   const orderMatch = text.match(/Order\s*#?\s*(\d{3}-\d{7}-\d{7})/);
   const dateMatch = text.match(/Order Placed:\s*(.+)/);
 
-  // Technician = shipping address name
   const shipNameMatch = text.match(/Shipping Address:\s*\n([^\n]+)/);
   const technicianName = shipNameMatch?.[1]?.trim() ?? null;
 
-  // Courier from shipping speed
   const speedMatch = text.match(/Shipping Speed:\s*\n([^\n]+)/);
   const deliveryCourier = speedMatch?.[1]?.trim() ?? null;
 
-  // Collect total shipping and tax across all shipments
-  const shippingMatches = [...text.matchAll(/Shipping & Handling:\s*\$(\d+\.?\d*)/g)];
-  const taxMatches = [...text.matchAll(/Sales Tax:\s*\$(\d+\.?\d*)/g)];
-  const totalShipping = shippingMatches.reduce((sum, m) => sum + parseFloat(m[1]), 0);
-  const totalTax = taxMatches.reduce((sum, m) => sum + parseFloat(m[1]), 0);
+  // Split into shipment blocks — each starts with "Items Ordered"
+  const shipmentBlocks = text.split(/Items Ordered\s*Price\n?/).slice(1);
 
   const items: ExtractedItem[] = [];
-  const segments = text.split(/(\d+)\s+of:\s*/);
 
-  for (let i = 1; i < segments.length - 1; i += 2) {
-    const quantity = parseInt(segments[i]);
-    const block = segments[i + 1];
-    const descLine = block.split("\n")[0].trim();
-    const partNumbers = findPartNumbers(block);
-    const brand = findBrand(block);
+  for (const shipBlock of shipmentBlocks) {
+    // Extract this shipment's shipping and tax
+    const shipMatch = shipBlock.match(/Shipping & Handling:\s*\$(\d+\.?\d*)/);
+    const taxMatch = shipBlock.match(/Sales Tax:\s*\$(\d+\.?\d*)/);
+    const blockShipping = shipMatch ? parseFloat(shipMatch[1]) : 0;
+    const blockTax = taxMatch ? parseFloat(taxMatch[1]) : 0;
 
-    const conditionPrice = block.match(/Condition:\s*\w+\n\$(\d+\.?\d*)/);
-    let price: number | null = null;
-    if (conditionPrice) {
-      price = parseFloat(conditionPrice[1]);
-    } else {
-      const standalone = block.match(/^\$(\d+\.?\d*)\s*$/m);
-      if (standalone) price = parseFloat(standalone[1]);
+    // Extract items from this shipment block
+    const blockItems: ExtractedItem[] = [];
+    // split produces: [preamble, qty, itemBlock, qty, itemBlock, ...]
+    const segments = shipBlock.split(/(\d+)\s+of:\s*/);
+
+    for (let i = 1; i < segments.length - 1; i += 2) {
+      const quantity = parseInt(segments[i]) || 1;
+      const block = segments[i + 1];
+      if (!block) continue;
+
+      const descLine = block.split("\n")[0].trim();
+      const partNumbers = findPartNumbers(block);
+      const brand = findBrand(block);
+
+      const conditionPrice = block.match(/Condition:\s*\w+\n\$(\d+\.?\d*)/);
+      let price: number | null = null;
+      if (conditionPrice) {
+        price = parseFloat(conditionPrice[1]);
+      } else {
+        const standalone = block.match(/^\$(\d+\.?\d*)\s*$/m);
+        if (standalone) price = parseFloat(standalone[1]);
+      }
+
+      blockItems.push({
+        partNumber: partNumbers[0] ?? "",
+        partName: descLine.slice(0, 200),
+        quantity,
+        unitPrice: price,
+        shipCost: null,
+        taxPrice: null,
+        brand,
+      });
     }
 
-    items.push({
-      partNumber: partNumbers[0] ?? "",
-      partName: descLine.slice(0, 200),
-      quantity,
-      unitPrice: price,
-      shipCost: null,
-      taxPrice: null,
-      brand,
-    });
-  }
-
-  // Distribute shipping and tax evenly across items
-  if (items.length > 0) {
-    const perItemShip = round2(totalShipping / items.length);
-    const perItemTax = round2(totalTax / items.length);
-    for (const item of items) {
-      item.shipCost = perItemShip;
-      item.taxPrice = perItemTax;
+    // Distribute this shipment's shipping/tax among its items
+    if (blockItems.length > 0) {
+      const perItemShip = round2(blockShipping / blockItems.length);
+      const perItemTax = round2(blockTax / blockItems.length);
+      for (const item of blockItems) {
+        item.shipCost = perItemShip;
+        item.taxPrice = perItemTax;
+      }
     }
+
+    items.push(...blockItems);
   }
 
   return {
