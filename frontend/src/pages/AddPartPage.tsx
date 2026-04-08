@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type ChangeEvent } from "react";
+import { useState, useRef, useCallback, type ChangeEvent, type DragEvent } from "react";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { AddPartForm } from "../components/AddPartForm";
@@ -23,6 +23,54 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+function useDropZone(onFiles: (files: File[]) => void, accept?: string) {
+  const [dragging, setDragging] = useState(false);
+  const dragCounter = useRef(0);
+
+  const handlers = {
+    onDragEnter(e: DragEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter.current++;
+      if (e.dataTransfer.types.includes("Files")) setDragging(true);
+    },
+    onDragOver(e: DragEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    onDragLeave(e: DragEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter.current--;
+      if (dragCounter.current === 0) setDragging(false);
+    },
+    onDrop(e: DragEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter.current = 0;
+      setDragging(false);
+      const dropped = Array.from(e.dataTransfer.files);
+      if (accept) {
+        const exts = accept.split(",").map((a) => a.trim().toLowerCase());
+        const filtered = dropped.filter((f) => {
+          const name = f.name.toLowerCase();
+          const mime = f.type.toLowerCase();
+          return exts.some(
+            (ext) =>
+              (ext.startsWith(".") && name.endsWith(ext)) ||
+              (ext.includes("/") && (ext === mime || (ext.endsWith("/*") && mime.startsWith(ext.replace("/*", "/")))))
+          );
+        });
+        if (filtered.length > 0) onFiles(filtered);
+      } else {
+        onFiles(dropped);
+      }
+    },
+  };
+
+  return { dragging, handlers };
+}
+
 // --- Scan Tab: single photo -> auto-fill form ---
 
 function ScanTab() {
@@ -34,9 +82,7 @@ function ScanTab() {
   const [description, setDescription] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  async function handleCapture(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function processFile(file: File) {
     setScanError("");
     setScanning(true);
     try {
@@ -56,6 +102,16 @@ function ScanTab() {
       if (inputRef.current) inputRef.current.value = "";
     }
   }
+
+  async function handleCapture(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) processFile(file);
+  }
+
+  const { dragging, handlers: dropHandlers } = useDropZone(
+    (files) => { if (files[0]) processFile(files[0]); },
+    "image/*"
+  );
 
   function reset() {
     setScanned(false);
@@ -82,9 +138,18 @@ function ScanTab() {
             Analyzing photo...
           </div>
         ) : (
-          <label className="flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+          <label
+            {...dropHandlers}
+            className={`flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+              dragging
+                ? "border-gray-900 dark:border-gray-100 bg-gray-50 dark:bg-gray-800"
+                : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+            }`}
+          >
             <Icon name="photo_camera" size={28} className="text-gray-400 dark:text-gray-500" />
-            <span className="text-sm text-gray-600 dark:text-gray-300">Tap to take photo or choose from gallery</span>
+            <span className="text-sm text-gray-600 dark:text-gray-300">
+              {dragging ? "Drop image here" : "Tap to take photo, choose from gallery, or drag and drop"}
+            </span>
             <input
               ref={inputRef}
               type="file"
@@ -132,8 +197,7 @@ function BulkScanTab() {
   const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
 
-  async function handleFiles(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
+  async function processFiles(files: File[]) {
     if (files.length === 0) return;
     setScanning(true);
     setScanProgress({ done: 0, total: files.length });
@@ -170,6 +234,15 @@ function BulkScanTab() {
     setScanning(false);
     if (inputRef.current) inputRef.current.value = "";
   }
+
+  function handleFiles(e: ChangeEvent<HTMLInputElement>) {
+    processFiles(Array.from(e.target.files ?? []));
+  }
+
+  const { dragging, handlers: dropHandlers } = useDropZone(
+    (files) => processFiles(files),
+    "image/*"
+  );
 
   function removePart(id: string) {
     setParts((prev) => prev.filter((p) => p.id !== id));
@@ -219,10 +292,21 @@ function BulkScanTab() {
           Scanning {scanProgress.done}/{scanProgress.total}...
         </div>
       ) : (
-        <label className="flex items-center justify-center gap-2 px-4 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+        <label
+          {...dropHandlers}
+          className={`flex items-center justify-center gap-2 px-4 py-6 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+            dragging
+              ? "border-gray-900 dark:border-gray-100 bg-gray-50 dark:bg-gray-800"
+              : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+          }`}
+        >
           <Icon name="add_photo_alternate" size={24} className="text-gray-400 dark:text-gray-500" />
           <span className="text-sm text-gray-600 dark:text-gray-300">
-            {parts.length > 0 ? "Add more photos" : "Select photos from gallery"}
+            {dragging
+              ? "Drop images here"
+              : parts.length > 0
+              ? "Add more photos or drag and drop"
+              : "Select photos from gallery or drag and drop"}
           </span>
           <input
             ref={inputRef}
@@ -347,9 +431,7 @@ function ImportTab() {
   const [orderNumber, setOrderNumber] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  async function handleFile(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function processFile(file: File) {
     setParseError("");
     setParsing(true);
     try {
@@ -386,6 +468,16 @@ function ImportTab() {
       if (inputRef.current) inputRef.current.value = "";
     }
   }
+
+  function handleFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) processFile(file);
+  }
+
+  const { dragging, handlers: dropHandlers } = useDropZone(
+    (files) => { if (files[0]) processFile(files[0]); },
+    ".pdf,application/pdf"
+  );
 
   function removeItem(id: string) {
     setItems((prev) => prev.filter((p) => p.id !== id));
@@ -487,14 +579,21 @@ function ImportTab() {
               Parsing document...
             </div>
           ) : (
-            <label className="flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition-colors">
+            <label
+              {...dropHandlers}
+              className={`flex flex-col items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+                dragging
+                  ? "border-gray-900 dark:border-gray-100 bg-gray-50 dark:bg-gray-800"
+                  : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+              }`}
+            >
               <Icon
                 name="upload_file"
                 size={28}
                 className="text-gray-400 dark:text-gray-500"
               />
               <span className="text-sm text-gray-600 dark:text-gray-300">
-                Select a PDF document
+                {dragging ? "Drop PDF here" : "Select or drag and drop a PDF document"}
               </span>
               <input
                 ref={inputRef}
