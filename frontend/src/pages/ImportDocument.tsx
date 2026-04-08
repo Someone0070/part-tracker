@@ -193,6 +193,9 @@ export function ImportDocument() {
                 <Row label="Unit Price" value={fmt(item.unitPrice)} />
                 <Row label="Ship Cost" value={fmt(item.shipCost)} />
                 <Row label="Tax" value={fmt(item.taxPrice)} />
+                <Row label="Total" value={fmt(
+                  (item.unitPrice ?? 0) + (item.shipCost ?? 0) + (item.taxPrice ?? 0)
+                )} />
                 <Row label="Quantity" value={String(item.quantity)} />
                 <Row label="Order Number" value={result.orderNumber} />
                 <Row label="Tracking" value={result.trackingNumber} />
