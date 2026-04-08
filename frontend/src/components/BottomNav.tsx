@@ -5,6 +5,7 @@ const tabs = [
   { path: "/", icon: "inventory_2", label: "Catalog" },
   { path: "/disassemble", icon: "handyman", label: "Disassemble" },
   { path: "/add", icon: "add_circle", label: "Add Part" },
+  { path: "/import", icon: "upload_file", label: "Import" },
   { path: "/settings", icon: "settings", label: "Settings" },
 ] as const;
 
