@@ -23,7 +23,9 @@ const port = parseInt(process.env.PORT || "3000", 10);
 // Trust proxy for Express internals
 app.set("trust proxy", 1);
 
-// Body parsing
+// Body parsing — larger limit for image upload routes, then global default
+app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
+app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 
@@ -75,9 +77,6 @@ app.use(generalLimiter);
 app.use("/api/parts", partsRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/ebay", ebayRouter);
-// Larger body limit for OCR and upload endpoints (base64 images up to ~10MB)
-app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
-app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
 app.use("/api/appliances", appliancesRouter);
 
 // Start server
