@@ -89,7 +89,6 @@ function ScanTab() {
               ref={inputRef}
               type="file"
               accept="image/*"
-              capture="environment"
               className="sr-only"
               onChange={handleCapture}
             />
