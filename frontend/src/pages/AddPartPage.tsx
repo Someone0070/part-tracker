@@ -148,7 +148,7 @@ function ScanTab() {
           >
             <Icon name="photo_camera" size={28} className="text-gray-400 dark:text-gray-500" />
             <span className="text-sm text-gray-600 dark:text-gray-300">
-              {dragging ? "Drop image here" : "Tap to take photo, choose from gallery, or drag and drop"}
+              {dragging ? "Drop image here" : "Tap to take photo or choose from gallery"}
             </span>
             <input
               ref={inputRef}
@@ -305,8 +305,8 @@ function BulkScanTab() {
             {dragging
               ? "Drop images here"
               : parts.length > 0
-              ? "Add more photos or drag and drop"
-              : "Select photos from gallery or drag and drop"}
+              ? "Add more photos"
+              : "Select photos from gallery"}
           </span>
           <input
             ref={inputRef}

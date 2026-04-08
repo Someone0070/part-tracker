@@ -2,9 +2,11 @@ import { PDFParse } from "pdf-parse";
 
 export interface ExtractedItem {
   partNumber: string;
-  description: string;
+  partName: string;
   quantity: number;
   unitPrice: number | null;
+  shipCost: number | null;
+  taxPrice: number | null;
   brand: string | null;
 }
 
@@ -12,6 +14,9 @@ export interface DocumentResult {
   vendor: string;
   orderNumber: string | null;
   orderDate: string | null;
+  technicianName: string | null;
+  trackingNumber: string | null;
+  deliveryCourier: string | null;
   items: ExtractedItem[];
   rawText: string;
 }
@@ -39,7 +44,6 @@ const BRAND_PATTERN =
   /\b(whirlpool|kenmore|ge|samsung|lg|maytag|frigidaire|bosch|kitchenaid|amana|hotpoint|electrolux|haier|hisense)\b/i;
 
 function findPartNumbers(text: string): string[] {
-  // Collect all matches with their position in the text
   const matches: Array<{ pn: string; index: number }> = [];
   const seen = new Set<string>();
   for (const pattern of PART_PATTERNS) {
@@ -53,7 +57,6 @@ function findPartNumbers(text: string): string[] {
       }
     }
   }
-  // Return in text position order so the first-mentioned part number comes first
   return matches.sort((a, b) => a.index - b.index).map((m) => m.pn);
 }
 
@@ -62,109 +65,137 @@ function findBrand(text: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+function parseDollar(text: string): number | null {
+  const m = text.match(/\$(\d+\.?\d*)/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 // --- Amazon Template ---
-// pdf-parse v2 output format:
-//   1 of: <description>\n<continuation>\nSold by...\nCondition: New\n$<price>\n...
 
 function parseAmazon(text: string): DocumentResult {
   const orderMatch = text.match(/Order\s*#?\s*(\d{3}-\d{7}-\d{7})/);
   const dateMatch = text.match(/Order Placed:\s*(.+)/);
 
-  const items: ExtractedItem[] = [];
+  // Technician = shipping address name
+  const shipNameMatch = text.match(/Shipping Address:\s*\n([^\n]+)/);
+  const technicianName = shipNameMatch?.[1]?.trim() ?? null;
 
-  // Split items by "N of:" pattern
+  // Courier from shipping speed
+  const speedMatch = text.match(/Shipping Speed:\s*\n([^\n]+)/);
+  const deliveryCourier = speedMatch?.[1]?.trim() ?? null;
+
+  // Collect total shipping and tax across all shipments
+  const shippingMatches = [...text.matchAll(/Shipping & Handling:\s*\$(\d+\.?\d*)/g)];
+  const taxMatches = [...text.matchAll(/Sales Tax:\s*\$(\d+\.?\d*)/g)];
+  const totalShipping = shippingMatches.reduce((sum, m) => sum + parseFloat(m[1]), 0);
+  const totalTax = taxMatches.reduce((sum, m) => sum + parseFloat(m[1]), 0);
+
+  const items: ExtractedItem[] = [];
   const segments = text.split(/(\d+)\s+of:\s*/);
 
   for (let i = 1; i < segments.length - 1; i += 2) {
     const quantity = parseInt(segments[i]);
     const block = segments[i + 1];
-
-    // Description is first line
     const descLine = block.split("\n")[0].trim();
-
-    // Search the whole block for part numbers and brand (description may wrap)
     const partNumbers = findPartNumbers(block);
     const brand = findBrand(block);
 
-    // Price appears after "Condition: New\n$X.XX" or as standalone "$X.XX" line
     const conditionPrice = block.match(/Condition:\s*\w+\n\$(\d+\.?\d*)/);
     let price: number | null = null;
     if (conditionPrice) {
       price = parseFloat(conditionPrice[1]);
     } else {
-      // Fallback: first standalone dollar amount
       const standalone = block.match(/^\$(\d+\.?\d*)\s*$/m);
       if (standalone) price = parseFloat(standalone[1]);
     }
 
     items.push({
       partNumber: partNumbers[0] ?? "",
-      description: descLine.slice(0, 200),
+      partName: descLine.slice(0, 200),
       quantity,
       unitPrice: price,
+      shipCost: null,
+      taxPrice: null,
       brand,
     });
+  }
+
+  // Distribute shipping and tax evenly across items
+  if (items.length > 0) {
+    const perItemShip = round2(totalShipping / items.length);
+    const perItemTax = round2(totalTax / items.length);
+    for (const item of items) {
+      item.shipCost = perItemShip;
+      item.taxPrice = perItemTax;
+    }
   }
 
   return {
     vendor: "amazon",
     orderNumber: orderMatch?.[1] ?? null,
     orderDate: dateMatch?.[1]?.trim() ?? null,
+    technicianName,
+    trackingNumber: null,
+    deliveryCourier,
     items,
     rawText: text,
   };
 }
 
 // --- eBay Template ---
-// pdf-parse v2 output format (tab-separated, compact):
-//   Quantity \tItem name Shipping\nservice\nItem\nprice
-//   1 Item Name\n(ebayId) Shipping Method \t$10.99
 
 function parseEbay(text: string): DocumentResult {
   const orderMatch = text.match(/Order number:\s*(\S+)/);
   const dateMatch = text.match(/Placed on\s*[\t\n]\s*(.+)/);
 
+  // Technician = shipping address name
+  const shipMatch = text.match(/Shipping address\s*\n([^\n]+)/);
+  const technicianName = shipMatch?.[1]?.trim() ?? null;
+
+  // Shipping cost
+  const shippingMatch = text.match(/Shipping\s*[\t]\s*(?:Free|\$(\d+\.?\d*))/i);
+  const totalShipping = shippingMatch?.[1] ? parseFloat(shippingMatch[1]) : 0;
+
+  // Tax
+  const taxMatch = text.match(/Tax\*?\s*[\t]\s*\$(\d+\.?\d*)/);
+  const totalTax = taxMatch ? parseFloat(taxMatch[1]) : 0;
+
+  // Courier from shipping service in item lines
+  let deliveryCourier: string | null = null;
+
   const items: ExtractedItem[] = [];
 
-  // Clean page markers first
   const cleaned = text
     .replace(/Page \d+ of \d+\tabout:srcdoc/g, "")
     .replace(/-- \d+ of \d+ --/g, "");
 
-  // Items live after "Items bought from" header
   const sections = cleaned.split(/Items bought from/i);
 
   for (let s = 1; s < sections.length; s++) {
     const section = sections[s];
-
-    // After "Item\nprice" header, find item lines
     const afterHeaders = section.split(/Item\s*\n?price/i)[1];
     if (!afterHeaders) continue;
 
-    // Match lines starting with quantity: "N <item text>...\t$price"
-    // The item may span multiple lines until we hit a tab+price
     const lines = afterHeaders.split("\n");
     let i = 0;
     while (i < lines.length) {
       const line = lines[i].trim();
-      // Line starts with a digit (quantity) followed by space and item name
       const qtyMatch = line.match(/^(\d+)\s+(.+)/);
-      if (!qtyMatch) {
-        i++;
-        continue;
-      }
+      if (!qtyMatch) { i++; continue; }
 
       const qty = parseInt(qtyMatch[1]);
       let itemBlock = qtyMatch[2];
-
-      // Collect continuation lines until we find a price
       let price: number | null = null;
+
       for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
         const priceLine = lines[j];
         const pm = priceLine.match(/\$(\d+\.?\d*)/);
         if (pm) {
           price = parseFloat(pm[1]);
-          // Include text before the price
           itemBlock += " " + priceLine.replace(/\$\d+\.?\d*/, "").trim();
           i = j + 1;
           break;
@@ -172,7 +203,6 @@ function parseEbay(text: string): DocumentResult {
         itemBlock += " " + priceLine.trim();
       }
       if (price === null) {
-        // Check if price is on same line (tab-separated)
         const inlinePrice = itemBlock.match(/\t\$(\d+\.?\d*)/);
         if (inlinePrice) {
           price = parseFloat(inlinePrice[1]);
@@ -181,7 +211,10 @@ function parseEbay(text: string): DocumentResult {
         i++;
       }
 
-      // Clean up: remove eBay item ID, shipping method noise
+      // Extract courier from shipping method in item text
+      const courierMatch = itemBlock.match(/\b(eBay\s+\w+|USPS|UPS|FedEx|DHL)\b/i);
+      if (courierMatch && !deliveryCourier) deliveryCourier = courierMatch[0].trim();
+
       const partNumbers = findPartNumbers(itemBlock);
       const brand = findBrand(itemBlock);
       const cleanName = itemBlock
@@ -194,12 +227,24 @@ function parseEbay(text: string): DocumentResult {
       if (cleanName || partNumbers.length > 0) {
         items.push({
           partNumber: partNumbers[0] ?? "",
-          description: cleanName.slice(0, 200),
+          partName: cleanName.slice(0, 200),
           quantity: qty,
           unitPrice: price,
+          shipCost: null,
+          taxPrice: null,
           brand,
         });
       }
+    }
+  }
+
+  // Distribute shipping and tax
+  if (items.length > 0) {
+    const perItemShip = round2(totalShipping / items.length);
+    const perItemTax = round2(totalTax / items.length);
+    for (const item of items) {
+      item.shipCost = perItemShip;
+      item.taxPrice = perItemTax;
     }
   }
 
@@ -207,91 +252,125 @@ function parseEbay(text: string): DocumentResult {
     vendor: "ebay",
     orderNumber: orderMatch?.[1] ?? null,
     orderDate: dateMatch?.[1]?.trim() ?? null,
+    technicianName,
+    trackingNumber: null,
+    deliveryCourier,
     items,
     rawText: text,
   };
 }
 
 // --- Marcone Template ---
-// pdf-parse v2 output format (tab-separated table):
-//   Ord \tPart \tMake \tDescription \tNARDA # \tUnit Price \tMSRP\nPrice\nTotal\tB/O\tShip
-//   1 \tWR78X20987 \tDOOR GASKET \t$88.83 \t$157.28 \t$88.83\t1 \t0
 
 function parseMarcone(text: string): DocumentResult {
   const invoiceMatch = text.match(/Invoice:\s*(\d+)/);
   const dateMatch = text.match(/Invoice Date:\s*(.+)/);
 
+  // Technician = Ship To person name (not company)
+  // Marcone Ship To section has company address first, then actual recipient
+  // Look for a name-like line near the physical shipping address
+  const shipToSection = text.split(/Ship To:/i)[1]?.split(/Remit Payment/i)[0] ?? "";
+  let technicianName: string | null = null;
+  if (shipToSection) {
+    const shipLines = shipToSection.split("\n").map((l) => l.trim()).filter(Boolean);
+    // Walk backwards - the actual recipient name is usually near the end, before "Remit Payment"
+    // It's a short all-alpha line that isn't an address
+    for (let i = shipLines.length - 1; i >= 0; i--) {
+      const line = shipLines[i];
+      if (/^\d/.test(line)) continue; // address line
+      if (/,\s*[A-Z]{2}\s+\d{5}/.test(line)) continue; // city, state zip
+      if (/\b(LLC|INC|CORP|LTD)\b/i.test(line)) continue; // company
+      if (/^UNIT\b/i.test(line)) continue; // unit number
+      if (line.length > 2 && line.length < 40 && /^[A-Z\s.'-]+$/i.test(line)) {
+        technicianName = line;
+        break;
+      }
+    }
+  }
+
+  // Tracking number
+  const trackingMatch = text.match(/Tracking\s*#?\s*[\t\s]*(?:\*+\s*[\t\s]*)?(\d{10,})/);
+  const trackingNumber = trackingMatch?.[1] ?? null;
+
+  // Shipping (Delivery) and Tax — Marcone stacks labels then values:
+  //   SubTotal:\nSales Tax:\nDelivery:\nHandling:\nC.O.D. Fee:\nInvoice Total:\n$88.83\n$8.44\n$13.49\n$0.00\n$0.00\n$110.76
+  let totalShipping = 0;
+  let totalTax = 0;
+  // Grab from SubTotal through the dollar values that follow Invoice Total
+  const subSection = text.match(/SubTotal:[\s\S]*?Invoice Total:\s*(?:\n\$[\d.]+)+/);
+  if (subSection) {
+    const block = subSection[0];
+    const labels = [...block.matchAll(/(SubTotal|Sales Tax|Delivery|Handling|C\.O\.D\.\s*Fee|Invoice Total):/gi)]
+      .map((m) => m[1].toLowerCase());
+    const values = [...block.matchAll(/\$(\d+\.?\d*)/g)].map((m) => parseFloat(m[1]));
+    const taxIdx = labels.indexOf("sales tax");
+    const deliveryIdx = labels.indexOf("delivery");
+    if (taxIdx >= 0 && taxIdx < values.length) totalTax = values[taxIdx];
+    if (deliveryIdx >= 0 && deliveryIdx < values.length) totalShipping = values[deliveryIdx];
+  }
+
   const items: ExtractedItem[] = [];
 
-  // Find data rows: lines starting with a digit, tab-separated, containing a dollar amount
   const lines = text.split("\n");
   for (const line of lines) {
-    // Data rows: "1 \tWR78X20987 \tDOOR GASKET \t$88.83 ..."
     if (!/^\d+\s*\t/.test(line)) continue;
     if (!/\$/.test(line)) continue;
 
     const cols = line.split("\t").map((c) => c.trim());
-    // cols[0] = qty (Ord), cols[1] = part number, cols[2] = description (or make+desc)
     const quantity = parseInt(cols[0]) || 1;
-
-    // Find part number in the columns
     let partNumber = "";
     let description = "";
     const prices: number[] = [];
 
     for (const col of cols.slice(1)) {
-      // Check if it's a price
       const priceMatch = col.match(/^\$(\d+\.?\d*)/);
-      if (priceMatch) {
-        prices.push(parseFloat(priceMatch[1]));
-        continue;
-      }
-      // Check if it looks like a part number
+      if (priceMatch) { prices.push(parseFloat(priceMatch[1])); continue; }
       const pns = findPartNumbers(col);
-      if (pns.length > 0 && !partNumber) {
-        partNumber = pns[0];
-        continue;
-      }
-      // Check if it's a pure number (B/O or Ship column)
+      if (pns.length > 0 && !partNumber) { partNumber = pns[0]; continue; }
       if (/^\d+$/.test(col)) continue;
-      // Otherwise it's likely description
-      if (col && !description) {
-        description = col;
-      }
+      if (col && !description) description = col;
     }
-
-    // First price is unit price
-    const unitPrice = prices[0] ?? null;
 
     if (partNumber || description) {
       items.push({
         partNumber,
-        description,
+        partName: description,
         quantity,
-        unitPrice,
+        unitPrice: prices[0] ?? null,
+        shipCost: null,
+        taxPrice: null,
         brand: null,
       });
     }
   }
 
-  // If table parsing found nothing, fall back to regex extraction from full text
+  // Fallback if table parsing found nothing
   if (items.length === 0) {
     const partNumbers = findPartNumbers(text);
-    const descMatch = text.match(
-      /Description[\s\S]*?\t([A-Z][A-Z\s/\-,.]+)/
-    );
+    const descMatch = text.match(/Description[\s\S]*?\t([A-Z][A-Z\s/\-,.]+)/);
     const description = descMatch?.[1]?.trim() ?? "";
     const priceMatch = text.match(/\$(\d+\.?\d{2})/);
-    const unitPrice = priceMatch ? parseFloat(priceMatch[1]) : null;
 
     for (const pn of partNumbers) {
       items.push({
         partNumber: pn,
-        description,
+        partName: description,
         quantity: 1,
-        unitPrice,
+        unitPrice: priceMatch ? parseFloat(priceMatch[1]) : null,
+        shipCost: null,
+        taxPrice: null,
         brand: null,
       });
+    }
+  }
+
+  // Distribute shipping and tax
+  if (items.length > 0) {
+    const perItemShip = round2(totalShipping / items.length);
+    const perItemTax = round2(totalTax / items.length);
+    for (const item of items) {
+      item.shipCost = perItemShip;
+      item.taxPrice = perItemTax;
     }
   }
 
@@ -299,6 +378,9 @@ function parseMarcone(text: string): DocumentResult {
     vendor: "marcone",
     orderNumber: invoiceMatch?.[1] ?? null,
     orderDate: dateMatch?.[1]?.trim() ?? null,
+    technicianName,
+    trackingNumber,
+    deliveryCourier: null,
     items,
     rawText: text,
   };
@@ -310,23 +392,26 @@ const ZAI_CHAT_URL = "https://api.z.ai/api/paas/v4/chat/completions";
 
 async function parseFallback(text: string): Promise<DocumentResult> {
   const apiKey = process.env.ZAI_API_KEY;
+  const empty: DocumentResult = {
+    vendor: "unknown",
+    orderNumber: null,
+    orderDate: null,
+    technicianName: null,
+    trackingNumber: null,
+    deliveryCourier: null,
+    items: findPartNumbers(text).map((pn) => ({
+      partNumber: pn,
+      partName: "",
+      quantity: 1,
+      unitPrice: null,
+      shipCost: null,
+      taxPrice: null,
+      brand: null,
+    })),
+    rawText: text,
+  };
 
-  if (!apiKey) {
-    const partNumbers = findPartNumbers(text);
-    return {
-      vendor: "unknown",
-      orderNumber: null,
-      orderDate: null,
-      items: partNumbers.map((pn) => ({
-        partNumber: pn,
-        description: "",
-        quantity: 1,
-        unitPrice: null,
-        brand: null,
-      })),
-      rawText: text,
-    };
-  }
+  if (!apiKey) return empty;
 
   try {
     const res = await fetch(ZAI_CHAT_URL, {
@@ -347,7 +432,7 @@ async function parseFallback(text: string): Promise<DocumentResult> {
           },
           {
             role: "user",
-            content: `Extract all purchased items from this document. Reply with JSON: {"vendor": "...", "orderNumber": "...", "orderDate": "...", "items": [{"partNumber": "...", "description": "...", "quantity": 1, "unitPrice": null, "brand": null}]}. Use null for unknown fields. partNumber should be an appliance part number if visible.\n\nDocument text:\n${text.slice(0, 3000)}`,
+            content: `Extract all purchased items from this document. Reply with JSON: {"vendor":"...","orderNumber":"...","orderDate":"...","technicianName":"...","trackingNumber":"...","deliveryCourier":"...","items":[{"partNumber":"...","partName":"...","quantity":1,"unitPrice":null,"shipCost":null,"taxPrice":null,"brand":null}]}. Use null for unknown fields.\n\nDocument text:\n${text.slice(0, 3000)}`,
           },
         ],
       }),
@@ -367,39 +452,26 @@ async function parseFallback(text: string): Promise<DocumentResult> {
 
     return {
       vendor: typeof parsed.vendor === "string" ? parsed.vendor : "unknown",
-      orderNumber:
-        typeof parsed.orderNumber === "string" ? parsed.orderNumber : null,
-      orderDate:
-        typeof parsed.orderDate === "string" ? parsed.orderDate : null,
+      orderNumber: typeof parsed.orderNumber === "string" ? parsed.orderNumber : null,
+      orderDate: typeof parsed.orderDate === "string" ? parsed.orderDate : null,
+      technicianName: typeof parsed.technicianName === "string" ? parsed.technicianName : null,
+      trackingNumber: typeof parsed.trackingNumber === "string" ? parsed.trackingNumber : null,
+      deliveryCourier: typeof parsed.deliveryCourier === "string" ? parsed.deliveryCourier : null,
       items: Array.isArray(parsed.items)
         ? parsed.items.map((item: Record<string, unknown>) => ({
-            partNumber:
-              typeof item.partNumber === "string" ? item.partNumber : "",
-            description:
-              typeof item.description === "string" ? item.description : "",
+            partNumber: typeof item.partNumber === "string" ? item.partNumber : "",
+            partName: typeof item.partName === "string" ? item.partName : "",
             quantity: typeof item.quantity === "number" ? item.quantity : 1,
-            unitPrice:
-              typeof item.unitPrice === "number" ? item.unitPrice : null,
+            unitPrice: typeof item.unitPrice === "number" ? item.unitPrice : null,
+            shipCost: typeof item.shipCost === "number" ? item.shipCost : null,
+            taxPrice: typeof item.taxPrice === "number" ? item.taxPrice : null,
             brand: typeof item.brand === "string" ? item.brand : null,
           }))
         : [],
       rawText: text,
     };
   } catch {
-    const partNumbers = findPartNumbers(text);
-    return {
-      vendor: "unknown",
-      orderNumber: null,
-      orderDate: null,
-      items: partNumbers.map((pn) => ({
-        partNumber: pn,
-        description: "",
-        quantity: 1,
-        unitPrice: null,
-        brand: null,
-      })),
-      rawText: text,
-    };
+    return empty;
   }
 }
 
@@ -413,18 +485,15 @@ export async function parseDocument(
   const result = await parser.getText();
   await parser.destroy();
 
-  // Clean text: remove form feeds, collapse excessive whitespace
   const text = result.text.replace(/\f/g, "\n").trim();
 
   if (text.length < 20) {
     throw new Error("Document appears to be empty or image-only");
   }
 
-  // Detect vendor and use template
   if (/amazon\.com/i.test(text)) return parseAmazon(text);
   if (/ebay/i.test(text) && /order number/i.test(text)) return parseEbay(text);
   if (/marcone/i.test(text)) return parseMarcone(text);
 
-  // Unknown vendor
   return parseFallback(text);
 }
