@@ -118,7 +118,7 @@ export async function extractApplianceInfo(imageBase64: string): Promise<OcrResu
     },
     body: JSON.stringify({
       model: "glm-ocr",
-      content: [{ type: "image", image: dataUri }],
+      file: dataUri,
     }),
   });
 
@@ -127,8 +127,18 @@ export async function extractApplianceInfo(imageBase64: string): Promise<OcrResu
     throw new Error(`OCR API error ${ocrRes.status}: ${body}`);
   }
 
-  const ocrData = (await ocrRes.json()) as { content?: string; text?: string };
-  const rawText = ocrData.content ?? ocrData.text ?? "";
+  const ocrData = (await ocrRes.json()) as {
+    content?: string;
+    text?: string;
+    md_results?: string;
+    layout_details?: Array<{ content?: string }>;
+  };
+  const rawText =
+    ocrData.md_results ??
+    ocrData.content ??
+    ocrData.text ??
+    ocrData.layout_details?.map((d) => d.content ?? "").join("\n") ??
+    "";
 
   let extracted = extractViaRegex(rawText);
 
