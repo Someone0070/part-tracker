@@ -106,6 +106,10 @@ export async function extractApplianceInfo(imageBase64: string): Promise<OcrResu
     throw new Error("not configured");
   }
 
+  // Z.AI OCR requires a data URI with MIME type prefix so it can detect the format
+  const hasPrefix = imageBase64.startsWith("data:");
+  const dataUri = hasPrefix ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
+
   const ocrRes = await fetch(ZAI_OCR_URL, {
     method: "POST",
     headers: {
@@ -114,7 +118,7 @@ export async function extractApplianceInfo(imageBase64: string): Promise<OcrResu
     },
     body: JSON.stringify({
       model: "glm-ocr",
-      content: [{ type: "image", image: imageBase64 }],
+      content: [{ type: "image", image: dataUri }],
     }),
   });
 
