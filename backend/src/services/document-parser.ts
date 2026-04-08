@@ -74,6 +74,37 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * Distribute shipping and tax proportionally by each item's share of the subtotal,
+ * then normalize all prices to per-unit (divide by quantity).
+ */
+function distributeAndNormalize(
+  items: ExtractedItem[],
+  totalShipping: number,
+  totalTax: number
+): void {
+  // Compute subtotal (sum of unitPrice * quantity for all items)
+  const subtotal = items.reduce(
+    (sum, item) => sum + (item.unitPrice ?? 0) * item.quantity,
+    0
+  );
+
+  for (const item of items) {
+    const lineTotal = (item.unitPrice ?? 0) * item.quantity;
+    const fraction = subtotal > 0 ? lineTotal / subtotal : 1 / items.length;
+
+    // Proportional share of shipping and tax for this line item
+    const lineShip = round2(totalShipping * fraction);
+    const lineTax = round2(totalTax * fraction);
+
+    // Normalize everything to per-unit
+    const qty = item.quantity || 1;
+    item.unitPrice = item.unitPrice != null ? round2(item.unitPrice) : null;
+    item.shipCost = round2(lineShip / qty);
+    item.taxPrice = round2(lineTax / qty);
+  }
+}
+
 // --- Amazon Template ---
 
 function parseAmazon(text: string): DocumentResult {
@@ -132,16 +163,7 @@ function parseAmazon(text: string): DocumentResult {
       });
     }
 
-    // Distribute this shipment's shipping/tax among its items
-    if (blockItems.length > 0) {
-      const perItemShip = round2(blockShipping / blockItems.length);
-      const perItemTax = round2(blockTax / blockItems.length);
-      for (const item of blockItems) {
-        item.shipCost = perItemShip;
-        item.taxPrice = perItemTax;
-      }
-    }
-
+    distributeAndNormalize(blockItems, blockShipping, blockTax);
     items.push(...blockItems);
   }
 
@@ -249,15 +271,7 @@ function parseEbay(text: string): DocumentResult {
     }
   }
 
-  // Distribute shipping and tax
-  if (items.length > 0) {
-    const perItemShip = round2(totalShipping / items.length);
-    const perItemTax = round2(totalTax / items.length);
-    for (const item of items) {
-      item.shipCost = perItemShip;
-      item.taxPrice = perItemTax;
-    }
-  }
+  distributeAndNormalize(items, totalShipping, totalTax);
 
   return {
     vendor: "ebay",
@@ -375,15 +389,7 @@ function parseMarcone(text: string): DocumentResult {
     }
   }
 
-  // Distribute shipping and tax
-  if (items.length > 0) {
-    const perItemShip = round2(totalShipping / items.length);
-    const perItemTax = round2(totalTax / items.length);
-    for (const item of items) {
-      item.shipCost = perItemShip;
-      item.taxPrice = perItemTax;
-    }
-  }
+  distributeAndNormalize(items, totalShipping, totalTax);
 
   return {
     vendor: "marcone",
