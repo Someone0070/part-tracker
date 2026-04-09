@@ -81,7 +81,7 @@ Add to the end of `backend/src/db/schema.ts`, after the `sessions` table:
 ```typescript
 export const vendorTemplates = pgTable("vendor_templates", {
   id: serial("id").primaryKey(),
-  vendorName: text("vendor_name").notNull(),
+  vendorName: text("vendor_name").notNull().unique(),
   vendorDomains: text("vendor_domains").array().notNull().default(sql`'{}'::text[]`),
   vendorKeywords: text("vendor_keywords").array().notNull().default(sql`'{}'::text[]`),
   extractionRules: text("extraction_rules").notNull(), // JSON string, parsed at runtime
@@ -101,7 +101,7 @@ Create `backend/drizzle/0005_vendor_templates.sql`:
 ```sql
 CREATE TABLE "vendor_templates" (
   "id" serial PRIMARY KEY NOT NULL,
-  "vendor_name" text NOT NULL,
+  "vendor_name" text NOT NULL UNIQUE,
   "vendor_domains" text[] NOT NULL DEFAULT '{}'::text[],
   "vendor_keywords" text[] NOT NULL DEFAULT '{}'::text[],
   "extraction_rules" text NOT NULL,
@@ -464,11 +464,10 @@ function validateStructure(
     }
   }
 
-  for (const pattern of patterns) {
-    const frac = literalFraction(pattern);
-    if (frac > 0.4) {
-      return { valid: false, reason: `Pattern is ${Math.round(frac * 100)}% literal: ${pattern}` };
-    }
+  // Only apply literal heuristic to row regex (field patterns naturally contain label text)
+  const rowFrac = literalFraction(rules.lineItems.row);
+  if (rowFrac > 0.4) {
+    return { valid: false, reason: `Row regex is ${Math.round(rowFrac * 100)}% literal: ${rules.lineItems.row}` };
   }
 
   return { valid: true };
@@ -817,27 +816,30 @@ export async function upsertTemplate(
 ): Promise<void> {
   const db = getDb();
   const rulesJson = JSON.stringify(rules);
+  const values = {
+    vendorName: rules.vendorName,
+    vendorDomains: rules.vendorSignals.domains,
+    vendorKeywords: rules.vendorSignals.keywords,
+    extractionRules: rulesJson,
+    successCount: 0,
+    failCount: 0,
+    updatedAt: new Date(),
+  };
 
   if (existingId) {
     await db
       .update(vendorTemplates)
-      .set({
-        vendorName: rules.vendorName,
-        vendorDomains: rules.vendorSignals.domains,
-        vendorKeywords: rules.vendorSignals.keywords,
-        extractionRules: rulesJson,
-        successCount: 0,
-        failCount: 0,
-        updatedAt: new Date(),
-      })
+      .set(values)
       .where(eq(vendorTemplates.id, existingId));
   } else {
-    await db.insert(vendorTemplates).values({
-      vendorName: rules.vendorName,
-      vendorDomains: rules.vendorSignals.domains,
-      vendorKeywords: rules.vendorSignals.keywords,
-      extractionRules: rulesJson,
-    });
+    // ON CONFLICT handles race condition: two concurrent first-seen uploads
+    await db
+      .insert(vendorTemplates)
+      .values(values)
+      .onConflictDoUpdate({
+        target: vendorTemplates.vendorName,
+        set: values,
+      });
   }
 }
 ```
@@ -884,9 +886,12 @@ import {
 
 export type { DocumentResult, ExtractedItem };
 
+const MAX_LLM_TEXT = 10_000; // Truncate before sending to LLM to prevent token blowups
+
 export async function parseDocument(
   pdfBase64: string,
-  onStep: StepCallback = () => {}
+  onStep: StepCallback = () => {},
+  abortSignal?: AbortSignal
 ): Promise<DocumentResult> {
   // Step 1: Extract text
   onStep("extracting_text", "Extracting text from PDF...");
@@ -923,20 +928,25 @@ export async function parseDocument(
 
       onStep("template_failed", "Template extraction failed. Falling back to LLM...");
       incrementFail(matched.id).catch(() => {});
+
+      // Only allow regeneration if template is already unreliable (prevents poisoning)
+      const canRegenerate =
+        matched.failCount + 1 > 3 && matched.successCount < matched.failCount + 1;
+      return llmPath(text, onStep, abortSignal, canRegenerate ? matched.id : undefined);
     } else {
       onStep("template_failed", `Template for ${matched.vendorName} is unreliable. Using LLM...`);
+      return llmPath(text, onStep, abortSignal, matched.id);
     }
-
-    return llmPath(text, onStep, matched.id);
   }
 
   onStep("no_template", "New vendor detected. Learning template via LLM...");
-  return llmPath(text, onStep);
+  return llmPath(text, onStep, abortSignal);
 }
 
 async function llmPath(
   text: string,
   onStep: StepCallback,
+  abortSignal?: AbortSignal,
   existingTemplateId?: number
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
@@ -945,9 +955,13 @@ async function llmPath(
     );
   }
 
+  if (abortSignal?.aborted) throw new Error("Request cancelled");
+
   onStep("llm_extracting", "Sending to gpt-5.4-nano for extraction + template generation...");
 
-  const llmResult = await llmExtractAndLearn(text);
+  // Truncate text to prevent token blowups (invoices are ~500-2000 chars)
+  const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
+  const llmResult = await llmExtractAndLearn(llmText);
 
   const items: ExtractedItem[] = llmResult.extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -1059,20 +1073,29 @@ router.post("/import", requireScope("parts:write"), async (req, res) => {
     Connection: "keep-alive",
   });
 
+  // Abort on client disconnect to avoid wasted LLM calls
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+
   const steps: Array<{ step: string; message: string }> = [];
 
   function sendStep(step: string, message: string) {
+    if (abort.signal.aborted) return;
     steps.push({ step, message });
     res.write(`event: step\ndata: ${JSON.stringify({ step, message })}\n\n`);
   }
 
   try {
-    const result = await parseDocument(document, sendStep);
-    res.write(`event: result\ndata: ${JSON.stringify({ ...result, steps })}\n\n`);
+    const result = await parseDocument(document, sendStep, abort.signal);
+    if (!abort.signal.aborted) {
+      res.write(`event: result\ndata: ${JSON.stringify({ ...result, steps })}\n\n`);
+    }
     res.end();
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to parse document";
-    res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+    if (!abort.signal.aborted) {
+      const message = err instanceof Error ? err.message : "Failed to parse document";
+      res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+    }
     res.end();
   }
 });

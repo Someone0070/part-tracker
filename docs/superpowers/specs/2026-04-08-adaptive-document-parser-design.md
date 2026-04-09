@@ -41,6 +41,10 @@ PDF bytes
 
 **Fallback:** If no API key is set, return the raw text with a clear error message explaining that LLM extraction is required for unknown vendors. No more silent 0-item returns.
 
+**Text cap:** Truncate extracted text to 10,000 characters before sending to the LLM. Invoice text is typically 500-2000 characters; anything beyond 10K is likely footer boilerplate, legal text, or a malformed PDF. This prevents token blowups and cost abuse.
+
+**PII acknowledgement:** This is a self-hosted business tool. The user uploads their own invoices. Sending invoice text to OpenAI is the core feature — there is no way to extract structured data from arbitrary formats without an LLM seeing the text. The `rawText` field returned to the browser is explicitly requested by the user for debugging. The spec avoids persisting PII in the DB (no `sample_text` column) but does not attempt to redact text in transit — that would break extraction.
+
 ## Template Format
 
 Based on the `invoice2data` pattern (2.2k GitHub stars, 100+ production templates). Regex for scalar fields, structural start/end markers + per-row regex for line items.
@@ -113,7 +117,7 @@ New table: `vendor_templates`
 ```sql
 CREATE TABLE vendor_templates (
   id SERIAL PRIMARY KEY,
-  vendor_name TEXT NOT NULL,
+  vendor_name TEXT NOT NULL UNIQUE,
   vendor_domains TEXT[] NOT NULL DEFAULT '{}',
   vendor_keywords TEXT[] NOT NULL DEFAULT '{}',
   extraction_rules JSONB NOT NULL,
@@ -134,7 +138,7 @@ No `sample_text` column -- invoice text contains customer PII (names, addresses,
 ```typescript
 export const vendorTemplates = pgTable("vendor_templates", {
   id: serial("id").primaryKey(),
-  vendorName: text("vendor_name").notNull(),
+  vendorName: text("vendor_name").notNull().unique(),
   vendorDomains: text("vendor_domains").array().notNull().default([]),
   vendorKeywords: text("vendor_keywords").array().notNull().default([]),
   extractionRules: jsonb("extraction_rules").notNull(),
@@ -381,7 +385,7 @@ Before even running the template, check that it's generic. These checks apply to
 1. **No literal values from the invoice** -- collect all extracted values from the LLM response (part numbers, prices, order number, tracking number, technician name, dates). Check that NONE of these literal values appear in ANY regex pattern (fields, row, totals). If the LLM extracted orderNumber "743106" and the orderNumber field regex contains the literal `743106`, reject. If technicianName is "SERGEY VOSTRIKOV" and the technicianName regex contains `VOSTRIKOV`, reject. This catches the most common LLM failure: overfitting to the specific invoice.
 2. **Named groups present** -- the row regex must contain `(?<partNumber>`, `(?<quantity>`, and `(?<unitPrice>` named groups at minimum.
 3. **RE2 compatibility** -- all regex patterns (fields, lineItems, totals) must compile under RE2. Reject if any pattern uses lookaheads, lookbehinds, or backreferences.
-4. **Character class heuristic** -- for every regex pattern, if more than 40% of the pattern is literal alphanumeric characters (excluding regex metacharacters), flag it as potentially non-generic and reject.
+4. **Character class heuristic (row regex only)** -- for the `lineItems.row` pattern only, if more than 40% of the pattern is literal alphanumeric characters (excluding regex metacharacters), flag it as potentially non-generic and reject. This check does NOT apply to field patterns or totals patterns, which naturally contain label text like "Invoice Number" or "Sub Total" that is expected to be literal.
 
 ### Phase 2: Extraction Validation (verify it works on this invoice)
 
@@ -407,9 +411,9 @@ Same-invoice validation cannot fully prove a template generalizes to other invoi
 
 ### Staleness logic
 
-- When a stored template extracts 0 items from a document matching its vendor signals: increment `fail_count`, fall back to LLM
-- LLM regenerates the template; if the new template validates, replace the old one (`UPDATE`, reset counters)
-- If `fail_count > 3` and `success_count < fail_count`: template is unreliable, always use LLM for this vendor until a valid template is generated
+- When a stored template extracts 0 items from a document matching its vendor signals: increment `fail_count`, fall back to LLM for extraction only (do NOT regenerate the template on a single failure)
+- **Regeneration is only allowed when the template is already unreliable:** `fail_count > 3` AND `success_count < fail_count`. Only then does the LLM regeneration path overwrite the existing template.
+- For a single failure on an otherwise-healthy template (success_count >= fail_count), the LLM extracts data for the user but the existing template is preserved. This prevents template poisoning: a PDF that happens to mention "amazon.com" in its text but is from a different vendor cannot clobber the Amazon template on a single mismatch.
 - `updated_at` is set on every counter update and on regeneration
 
 ## Amazon, eBay, Marcone — Pre-seeded Templates
@@ -555,7 +559,12 @@ router.post("/import", requireScope("parts:write"), async (req, res) => {
     res.end();
   }
 
+  // Abort on client disconnect to avoid wasted LLM calls
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+
   // ... extraction logic calls sendStep() at each stage
+  // Pass abort.signal to the OpenAI call; check abort.signal.aborted before expensive ops
 });
 ```
 
