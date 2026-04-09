@@ -2,7 +2,7 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate } from "./template-validate.js";
-import { llmExtractAndLearn, isLlmConfigured } from "./template-llm.js";
+import { llmExtract, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -134,12 +134,13 @@ async function llmPath(
 
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
-  onStep("llm_extracting", "Sending to gpt-5.4-nano for extraction + template generation...");
+  // Step 1: Fast extraction with nano
+  onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
 
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const llmResult = await llmExtractAndLearn(llmText, abortSignal);
+  const extraction = await llmExtract(llmText, abortSignal);
 
-  const items: ExtractedItem[] = llmResult.extraction.items.map((item) => ({
+  const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
     partName: item.partName,
     quantity: item.quantity,
@@ -149,53 +150,47 @@ async function llmPath(
     brand: item.brand,
   }));
 
-  // Extract totals: prefer LLM-extracted values, fall back to regex
-  const templateRules = llmResult.template;
-  let tax = llmResult.extraction.totalTax ?? 0;
-  let shipping = llmResult.extraction.totalShipping ?? 0;
-  if (tax === 0 && shipping === 0) {
-    try {
-      const taxRule = templateRules.totals.find((t) => t.name === "tax");
-      const shipRule = templateRules.totals.find((t) => t.name === "shipping");
-      const taxMatch = taxRule ? safeMatch(text, taxRule.regex, "s") : null;
-      const shipMatch = shipRule ? safeMatch(text, shipRule.regex, "s") : null;
-      tax = taxMatch?.[1] ? parseFloat(taxMatch[1]) : 0;
-      shipping = shipMatch?.[1] ? parseFloat(shipMatch[1]) : 0;
-    } catch {
-      // Totals extraction failed
-    }
-  }
-
+  const tax = extraction.totalTax ?? 0;
+  const shipping = extraction.totalShipping ?? 0;
   if ((tax > 0 || shipping > 0) && items.length > 0) {
     distributeAndNormalize(items, shipping, tax);
   }
 
   const docResult: DocumentResult = {
-    vendor: llmResult.extraction.vendor,
-    orderNumber: llmResult.extraction.orderNumber,
-    orderDate: llmResult.extraction.orderDate,
-    technicianName: llmResult.extraction.technicianName,
-    trackingNumber: llmResult.extraction.trackingNumber,
-    deliveryCourier: llmResult.extraction.deliveryCourier,
+    vendor: extraction.vendor,
+    orderNumber: extraction.orderNumber,
+    orderDate: extraction.orderDate,
+    technicianName: extraction.technicianName,
+    trackingNumber: extraction.trackingNumber,
+    deliveryCourier: extraction.deliveryCourier,
     items,
     rawText: text,
   };
 
-  onStep("validating_template", "Validating generated template...");
-  const validation = validateTemplate(text, templateRules, llmResult.extraction);
+  // Step 2: Generate template with mini (smarter model for regex)
+  onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
+  try {
+    const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal);
 
-  if (validation.valid) {
-    await upsertTemplate(templateRules, existingTemplateId);
-    onStep(
-      "template_stored",
-      "Template learned and stored. Future invoices from this vendor will be instant."
-    );
-  } else {
-    console.warn("Template validation failed:", validation.reason);
-    onStep(
-      "template_validation_failed",
-      "Template validation failed. Using LLM extraction directly."
-    );
+    onStep("validating_template", "Validating generated template...");
+    const validation = validateTemplate(text, templateRules, extraction);
+
+    if (validation.valid) {
+      await upsertTemplate(templateRules, existingTemplateId);
+      onStep(
+        "template_stored",
+        "Template learned and stored. Future invoices from this vendor will be instant."
+      );
+    } else {
+      console.warn("Template validation failed:", validation.reason);
+      onStep(
+        "template_validation_failed",
+        `Template validation failed: ${validation.reason}`
+      );
+    }
+  } catch (err) {
+    console.warn("Template generation failed:", err);
+    onStep("template_validation_failed", "Template generation failed. Extraction still succeeded.");
   }
 
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);

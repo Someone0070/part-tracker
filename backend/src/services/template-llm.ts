@@ -9,25 +9,72 @@ interface LlmExtractionItem {
   brand: string | null;
 }
 
+export interface LlmExtraction {
+  vendor: string;
+  orderNumber: string | null;
+  orderDate: string | null;
+  technicianName: string | null;
+  trackingNumber: string | null;
+  deliveryCourier: string | null;
+  totalTax: number | null;
+  totalShipping: number | null;
+  items: LlmExtractionItem[];
+}
+
 export interface LlmResult {
-  extraction: {
-    vendor: string;
-    orderNumber: string | null;
-    orderDate: string | null;
-    technicianName: string | null;
-    trackingNumber: string | null;
-    deliveryCourier: string | null;
-    totalTax: number | null;
-    totalShipping: number | null;
-    items: LlmExtractionItem[];
-  };
+  extraction: LlmExtraction;
   template: ExtractionRules;
 }
 
-const SYSTEM_PROMPT = `You extract purchase order data from document text AND generate a reusable regex-based extraction template for this vendor's invoice format.
+// --- Extraction (nano: fast + cheap) ---
 
-CRITICAL rules for the template:
-- All regex patterns use RE2-compatible syntax (no lookaheads, lookbehinds, or backreferences)
+const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals. Reply with structured JSON.
+
+- ALWAYS extract totalTax and totalShipping. Look for tax/shipping amounts even in unusual formats (stacked labels then values, summary tables, etc.)
+- For quantity, look carefully at the document — some formats put quantity in unexpected columns
+- unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)`;
+
+const EXTRACTION_SCHEMA = {
+  name: "invoice_extraction",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      vendor: { type: "string" },
+      orderNumber: { type: ["string", "null"] },
+      orderDate: { type: ["string", "null"] },
+      technicianName: { type: ["string", "null"] },
+      trackingNumber: { type: ["string", "null"] },
+      deliveryCourier: { type: ["string", "null"] },
+      totalTax: { type: ["number", "null"] },
+      totalShipping: { type: ["number", "null"] },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            partNumber: { type: "string" },
+            partName: { type: "string" },
+            quantity: { type: "number" },
+            unitPrice: { type: ["number", "null"] },
+            brand: { type: ["string", "null"] },
+          },
+          required: ["partNumber", "partName", "quantity", "unitPrice", "brand"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["vendor", "orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping", "items"],
+    additionalProperties: false,
+  },
+};
+
+// --- Template generation (mini: precise regex crafting) ---
+
+const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex-based extraction templates for invoice formats. You will receive the raw document text and the extracted data. Generate regex patterns that can re-extract the same data from any invoice in the same format.
+
+CRITICAL rules:
+- All regex patterns MUST use RE2-compatible syntax (NO lookaheads, lookbehinds, or backreferences)
 - Line item row patterns MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...)
 - Row patterns must match ANY number of item rows, not just the ones in this document
 - NEVER hardcode literal values from this invoice (part numbers, prices, names) into regex patterns. Use character classes like \\d+, \\S+, [^\\t]+, .+? instead
@@ -38,99 +85,63 @@ CRITICAL rules for the template:
 - Do NOT match payment lines, subtotal lines, or footer text with the row pattern
 - For vendor signals, extract the company domain and a unique identifying phrase
 - fields is an array of {name, regex, group} objects. Use names like "orderNumber", "orderDate", "technicianName", "trackingNumber", "courier"
-- totals is an array of {name, regex} objects. Use names "tax" and "shipping" for the total extraction patterns
-- ALWAYS extract totalTax and totalShipping in the extraction object. Look for tax/shipping amounts even if they are in unusual formats (stacked labels then values, summary tables, etc.)`;
+- totals is an array of {name, regex} objects. Use names "tax" and "shipping"
 
-const RESPONSE_SCHEMA = {
-  name: "invoice_extraction",
+Study the document text carefully. Pay attention to tab characters, column ordering, and line structure. The regex must actually match the text format you see.`;
+
+const TEMPLATE_SCHEMA = {
+  name: "invoice_template",
   strict: true,
   schema: {
     type: "object",
     properties: {
-      extraction: {
+      vendorName: { type: "string" },
+      vendorSignals: {
         type: "object",
         properties: {
-          vendor: { type: "string" },
-          orderNumber: { type: ["string", "null"] },
-          orderDate: { type: ["string", "null"] },
-          technicianName: { type: ["string", "null"] },
-          trackingNumber: { type: ["string", "null"] },
-          deliveryCourier: { type: ["string", "null"] },
-          totalTax: { type: ["number", "null"] },
-          totalShipping: { type: ["number", "null"] },
-          items: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                partNumber: { type: "string" },
-                partName: { type: "string" },
-                quantity: { type: "number" },
-                unitPrice: { type: ["number", "null"] },
-                brand: { type: ["string", "null"] },
-              },
-              required: ["partNumber", "partName", "quantity", "unitPrice", "brand"],
-              additionalProperties: false,
-            },
-          },
+          domains: { type: "array", items: { type: "string" } },
+          keywords: { type: "array", items: { type: "string" } },
         },
-        required: ["vendor", "orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping", "items"],
+        required: ["domains", "keywords"],
         additionalProperties: false,
       },
-      template: {
+      fields: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            regex: { type: "string" },
+            group: { type: "number" },
+          },
+          required: ["name", "regex", "group"],
+          additionalProperties: false,
+        },
+      },
+      lineItems: {
         type: "object",
         properties: {
-          vendorName: { type: "string" },
-          vendorSignals: {
-            type: "object",
-            properties: {
-              domains: { type: "array", items: { type: "string" } },
-              keywords: { type: "array", items: { type: "string" } },
-            },
-            required: ["domains", "keywords"],
-            additionalProperties: false,
-          },
-          fields: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                name: { type: "string" },
-                regex: { type: "string" },
-                group: { type: "number" },
-              },
-              required: ["name", "regex", "group"],
-              additionalProperties: false,
-            },
-          },
-          lineItems: {
-            type: "object",
-            properties: {
-              start: { type: "string" },
-              end: { type: "string" },
-              row: { type: "string" },
-            },
-            required: ["start", "end", "row"],
-            additionalProperties: false,
-          },
-          totals: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                name: { type: "string" },
-                regex: { type: "string" },
-              },
-              required: ["name", "regex"],
-              additionalProperties: false,
-            },
-          },
+          start: { type: "string" },
+          end: { type: "string" },
+          row: { type: "string" },
         },
-        required: ["vendorName", "vendorSignals", "fields", "lineItems", "totals"],
+        required: ["start", "end", "row"],
         additionalProperties: false,
+      },
+      totals: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            regex: { type: "string" },
+          },
+          required: ["name", "regex"],
+          additionalProperties: false,
+        },
       },
     },
-    required: ["extraction", "template"],
+    required: ["vendorName", "vendorSignals", "fields", "lineItems", "totals"],
     additionalProperties: false,
   },
 };
@@ -150,10 +161,10 @@ export function isLlmConfigured(): boolean {
   return !!process.env.OPENAI_API_KEY;
 }
 
-export async function llmExtractAndLearn(
+export async function llmExtract(
   text: string,
   abortSignal?: AbortSignal
-): Promise<LlmResult> {
+): Promise<LlmExtraction> {
   const client = getClient();
 
   const response = await client.chat.completions.create(
@@ -161,16 +172,15 @@ export async function llmExtractAndLearn(
       model: "gpt-5.4-nano",
       temperature: 0,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Extract all purchased items from this invoice and generate a reusable regex template for this vendor's format.\n\nDocument text:\n${text}`,
+          content: `Extract all purchased items from this invoice.\n\nDocument text:\n${text}`,
         },
       ],
       response_format: {
         type: "json_schema",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        json_schema: RESPONSE_SCHEMA as any,
+        json_schema: EXTRACTION_SCHEMA as any,
       },
     },
     { signal: abortSignal }
@@ -179,5 +189,50 @@ export async function llmExtractAndLearn(
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Empty LLM response");
 
-  return JSON.parse(content) as LlmResult;
+  return JSON.parse(content) as LlmExtraction;
+}
+
+export async function llmGenerateTemplate(
+  text: string,
+  extraction: LlmExtraction,
+  abortSignal?: AbortSignal
+): Promise<ExtractionRules> {
+  const client = getClient();
+
+  const extractionSummary = JSON.stringify({
+    vendor: extraction.vendor,
+    orderNumber: extraction.orderNumber,
+    items: extraction.items.map((i) => ({
+      partNumber: i.partNumber,
+      partName: i.partName,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice,
+    })),
+    totalTax: extraction.totalTax,
+    totalShipping: extraction.totalShipping,
+  });
+
+  const response = await client.chat.completions.create(
+    {
+      model: "gpt-5.4-mini",
+      temperature: 0,
+      messages: [
+        { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Generate a reusable regex extraction template for this invoice format.\n\nExtracted data (for reference — do NOT hardcode these values):\n${extractionSummary}\n\nRaw document text:\n${text}`,
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: TEMPLATE_SCHEMA as any,
+      },
+    },
+    { signal: abortSignal }
+  );
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error("Empty template generation response");
+
+  return JSON.parse(content) as ExtractionRules;
 }

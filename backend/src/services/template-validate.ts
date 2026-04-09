@@ -144,13 +144,5 @@ export function validateTemplate(
   const structural = validateStructure(rules, extraction);
   if (!structural.valid) return structural;
 
-  // Extraction validation is advisory -- log but don't block saving.
-  // A template that passes structural checks but fails extraction will
-  // accumulate failCount and get regenerated naturally.
-  const extractionCheck = validateExtraction(text, rules, extraction);
-  if (!extractionCheck.valid) {
-    console.warn("Template extraction verification warning:", extractionCheck.reason);
-  }
-
-  return { valid: true };
+  return validateExtraction(text, rules, extraction);
 }
