@@ -12,7 +12,7 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+export async function refreshAccessToken(): Promise<string | null> {
   try {
     const res = await fetch("/api/auth/refresh", { method: "POST" });
     if (!res.ok) {
