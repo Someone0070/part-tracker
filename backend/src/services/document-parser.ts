@@ -125,6 +125,12 @@ export async function parseDocument(
         }
 
         incrementSuccess(tpl.id).catch(() => {});
+
+        // Spot-check: every 10th use, verify template output against nano
+        if (isLlmConfigured() && (tpl.successCount + 1) % 10 === 0) {
+          verifyTemplateInBackground(text, extracted, tpl.id);
+        }
+
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
       }
@@ -262,4 +268,35 @@ async function llmPath(
 
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
+}
+
+/**
+ * Fire-and-forget: run nano extraction and compare against template result.
+ * If items diverge (different count or missing part numbers), increment failCount.
+ * This catches silent template degradation from vendor format changes.
+ */
+function verifyTemplateInBackground(
+  text: string,
+  templateResult: DocumentResult,
+  templateId: number
+): void {
+  const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
+  llmExtract(llmText).then((nano) => {
+    const tplPNs = new Set(templateResult.items.map((i) => i.partNumber));
+    const nanoPNs = new Set(nano.items.map((i) => i.partNumber).filter(Boolean));
+
+    // Check: does nano find items the template missed?
+    let mismatched = false;
+    if (nano.items.length > templateResult.items.length) mismatched = true;
+    for (const pn of nanoPNs) {
+      if (!tplPNs.has(pn)) { mismatched = true; break; }
+    }
+
+    if (mismatched) {
+      console.warn(`Template ${templateId} spot-check FAILED: template=${templateResult.items.length} items, nano=${nano.items.length} items`);
+      incrementFail(templateId).catch(() => {});
+    }
+  }).catch(() => {
+    // Spot-check failure is non-critical
+  });
 }
