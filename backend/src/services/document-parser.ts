@@ -43,7 +43,7 @@ const PART_PATTERNS: RegExp[] = [
 const BRAND_PATTERN =
   /\b(whirlpool|kenmore|ge|samsung|lg|maytag|frigidaire|bosch|kitchenaid|amana|hotpoint|electrolux|haier|hisense)\b/i;
 
-function findPartNumbers(text: string): string[] {
+export function findPartNumbers(text: string): string[] {
   const matches: Array<{ pn: string; index: number }> = [];
   const seen = new Set<string>();
   for (const pattern of PART_PATTERNS) {
@@ -60,7 +60,7 @@ function findPartNumbers(text: string): string[] {
   return matches.sort((a, b) => a.index - b.index).map((m) => m.pn);
 }
 
-function findBrand(text: string): string | null {
+export function findBrand(text: string): string | null {
   const m = BRAND_PATTERN.exec(text);
   return m ? m[1].toLowerCase() : null;
 }
@@ -78,7 +78,7 @@ function round2(n: number): number {
  * Distribute shipping and tax proportionally by each item's share of the subtotal,
  * then normalize all prices to per-unit (divide by quantity).
  */
-function distributeAndNormalize(
+export function distributeAndNormalize(
   items: ExtractedItem[],
   totalShipping: number,
   totalTax: number
