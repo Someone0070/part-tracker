@@ -64,8 +64,9 @@ router.post(
     let fetchResult;
     try {
       fetchResult = await fetchOrderPage(rawUrl, cookies);
-    } catch (err: any) {
-      const errType = err.type || "network";
+    } catch (err) {
+      const fetchErr = err as Error & { type?: string };
+      const errType = fetchErr.type || "network";
       const status = errType === "timeout" ? 504 : 502;
 
       await db
@@ -74,7 +75,7 @@ router.post(
         .where(eq(vendorCookies.id, cookieRow.id));
 
       res.status(status).json({
-        error: err.message || "Fetch failed",
+        error: fetchErr.message || "Fetch failed",
         errorType: errType,
         domain: cookieRow.domain,
       });

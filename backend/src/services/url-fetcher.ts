@@ -14,6 +14,7 @@ export interface FetchResult {
 // --- Browser singleton ---
 
 let browserInstance: Browser | null = null;
+let launchPromise: Promise<Browser> | null = null;
 let idleTimer: NodeJS.Timeout | null = null;
 const BROWSER_TTL = parseInt(process.env.URL_FETCH_BROWSER_TTL_MS || "300000", 10);
 const PAGE_TIMEOUT = parseInt(process.env.URL_FETCH_PAGE_TIMEOUT_MS || "30000", 10);
@@ -35,13 +36,21 @@ async function getBrowser(): Promise<Browser> {
     resetIdleTimer();
     return browserInstance;
   }
-  browserInstance = await chromium.launch({
+  if (launchPromise) return launchPromise;
+  launchPromise = chromium.launch({
     headless: true,
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
     args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+  }).then((b) => {
+    browserInstance = b;
+    launchPromise = null;
+    resetIdleTimer();
+    return b;
+  }).catch((err) => {
+    launchPromise = null;
+    throw err;
   });
-  resetIdleTimer();
-  return browserInstance;
+  return launchPromise;
 }
 
 // --- SSRF protection ---
@@ -49,15 +58,39 @@ async function getBrowser(): Promise<Browser> {
 const dnsCache = new Map<string, { ips: string[]; ts: number }>();
 const DNS_CACHE_TTL = 30_000;
 
-function isPrivateIp(ip: string): boolean {
-  if (ip.startsWith("127.") || ip.startsWith("10.") || ip.startsWith("0.")) return true;
+function normalizeIp(ip: string): string {
+  // Convert IPv4-mapped IPv6 (::ffff:10.0.0.1) to plain IPv4
+  const mapped = ip.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (mapped) return mapped[1];
+  return ip;
+}
+
+function isPrivateIp(raw: string): boolean {
+  const ip = normalizeIp(raw);
+
+  // IPv4 ranges
+  if (ip.startsWith("0.")) return true;           // 0.0.0.0/8
+  if (ip.startsWith("10.")) return true;           // 10.0.0.0/8
+  if (ip.startsWith("127.")) return true;          // 127.0.0.0/8
+  if (ip.startsWith("169.254.")) return true;      // link-local
+  if (ip.startsWith("192.168.")) return true;      // 192.168.0.0/16
   if (ip.startsWith("172.")) {
     const second = parseInt(ip.split(".")[1]);
-    if (second >= 16 && second <= 31) return true;
+    if (second >= 16 && second <= 31) return true;  // 172.16.0.0/12
   }
-  if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("169.254.")) return true;
-  if (ip === "::1" || ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80")) return true;
+  if (ip.startsWith("100.")) {
+    const second = parseInt(ip.split(".")[1]);
+    if (second >= 64 && second <= 127) return true;  // 100.64.0.0/10 (CGNAT/cloud metadata)
+  }
+  if (ip.startsWith("198.18.") || ip.startsWith("198.19.")) return true;  // benchmark
+  if (ip.startsWith("240.")) return true;           // reserved
+
+  // IPv6 ranges
+  if (ip === "::1") return true;                    // loopback
+  if (ip === "::") return true;                     // unspecified
+  if (ip.startsWith("fc") || ip.startsWith("fd")) return true;  // unique local
+  if (ip.startsWith("fe80")) return true;           // link-local
+
   return false;
 }
 
@@ -102,7 +135,7 @@ export function validateUrlSyntax(urlString: string): URL {
   if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) {
     throw new Error("URL not allowed");
   }
-  if (isIpLiteral(host) && isPrivateIp(host)) {
+  if (isIpLiteral(host)) {
     throw new Error("URL not allowed");
   }
   return url;
@@ -157,7 +190,6 @@ export async function fetchOrderPage(url: string, cookies: ParsedCookie[]): Prom
     const page = await context.newPage();
 
     // SSRF interception
-    dnsCache.clear();
     await page.route("**/*", async (route) => {
       try {
         const reqUrl = new URL(route.request().url());
