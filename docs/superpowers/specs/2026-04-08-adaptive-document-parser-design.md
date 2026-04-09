@@ -117,10 +117,11 @@ New table: `vendor_templates`
 ```sql
 CREATE TABLE vendor_templates (
   id SERIAL PRIMARY KEY,
-  vendor_name TEXT NOT NULL UNIQUE,
+  vendor_key TEXT NOT NULL UNIQUE,
+  vendor_name TEXT NOT NULL,
   vendor_domains TEXT[] NOT NULL DEFAULT '{}',
   vendor_keywords TEXT[] NOT NULL DEFAULT '{}',
-  extraction_rules JSONB NOT NULL,
+  extraction_rules TEXT NOT NULL,
   success_count INTEGER NOT NULL DEFAULT 0,
   fail_count INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -131,17 +132,37 @@ CREATE INDEX idx_vendor_templates_domains ON vendor_templates USING GIN (vendor_
 CREATE INDEX idx_vendor_templates_keywords ON vendor_templates USING GIN (vendor_keywords);
 ```
 
+**`vendor_key`** is the stable identity — derived deterministically as `first domain` (e.g., `wcpdistributing.com`) or, if no domain, `slugified first keyword` (e.g., `west-coast-parts-distributing`). This prevents LLM naming drift ("Amazon" vs "Amazon.com" vs "Amazon Marketplace") from fragmenting or clobbering rows. `vendor_name` is a display label only.
+
+**`extraction_rules`** is stored as TEXT (JSON string), not JSONB. Parsed at runtime. Avoids Drizzle JSONB typing issues.
+
 No `sample_text` column -- invoice text contains customer PII (names, addresses, tracking numbers). The template's extraction_rules are sufficient for debugging; storing the raw invoice text is unnecessary risk.
+
+### Vendor Key Derivation
+
+```typescript
+function deriveVendorKey(signals: { domains: string[]; keywords: string[] }): string {
+  if (signals.domains.length > 0) {
+    return signals.domains[0].toLowerCase();
+  }
+  // Slugify first keyword
+  return signals.keywords[0]
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") ?? "unknown";
+}
+```
 
 ### Drizzle Schema
 
 ```typescript
 export const vendorTemplates = pgTable("vendor_templates", {
   id: serial("id").primaryKey(),
-  vendorName: text("vendor_name").notNull().unique(),
-  vendorDomains: text("vendor_domains").array().notNull().default([]),
-  vendorKeywords: text("vendor_keywords").array().notNull().default([]),
-  extractionRules: jsonb("extraction_rules").notNull(),
+  vendorKey: text("vendor_key").notNull().unique(),
+  vendorName: text("vendor_name").notNull(),
+  vendorDomains: text("vendor_domains").array().notNull().default(sql`'{}'::text[]`),
+  vendorKeywords: text("vendor_keywords").array().notNull().default(sql`'{}'::text[]`),
+  extractionRules: text("extraction_rules").notNull(),
   successCount: integer("success_count").notNull().default(0),
   failCount: integer("fail_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -151,14 +172,19 @@ export const vendorTemplates = pgTable("vendor_templates", {
 
 ## Vendor Detection
 
-Priority-ordered cascade -- stop at first confident match:
+Priority-ordered cascade -- stop at first confident match. Returns both the template and the match confidence level.
 
-1. **Domain match** -- extract all URLs/email domains from text, normalize to base domain, match against `vendor_domains` array. Catches ~70% of invoices.
-2. **Keyword match** -- check if any `vendor_keywords` appear in the text (case-insensitive). Catches ~25% more.
+1. **Domain match (high confidence)** -- extract all URLs/email domains from text, normalize to base domain, match against `vendor_domains` array. Catches ~70% of invoices. Failures from domain-matched templates increment `fail_count`.
+2. **Keyword match (low confidence)** -- check if any `vendor_keywords` appear in the text (case-insensitive). Catches ~25% more. **Failures from keyword-only matches do NOT increment `fail_count`** because keyword matches are prone to false positives (a PDF from vendor X may mention "Amazon" in its text). This prevents false matches from ratcheting a healthy template toward unreliable status.
 3. **No match** -- new vendor, proceed to LLM extraction.
 
 ```typescript
-function detectVendor(text: string, templates: VendorTemplate[]): VendorTemplate | null {
+interface VendorMatch {
+  template: VendorTemplate;
+  confidence: "domain" | "keyword";
+}
+
+function detectVendor(text: string, templates: VendorTemplate[]): VendorMatch | null {
   const textLower = text.toLowerCase();
 
   // Extract domains from text
@@ -169,17 +195,17 @@ function detectVendor(text: string, templates: VendorTemplate[]): VendorTemplate
     d.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").toLowerCase()
   );
 
-  // Tier 1: domain match
+  // Tier 1: domain match (high confidence)
   for (const tpl of templates) {
     if (tpl.vendorDomains.some(d => textDomains.includes(d.toLowerCase()))) {
-      return tpl;
+      return { template: tpl, confidence: "domain" };
     }
   }
 
-  // Tier 2: keyword match
+  // Tier 2: keyword match (low confidence)
   for (const tpl of templates) {
     if (tpl.vendorKeywords.some(k => textLower.includes(k.toLowerCase()))) {
-      return tpl;
+      return { template: tpl, confidence: "keyword" };
     }
   }
 

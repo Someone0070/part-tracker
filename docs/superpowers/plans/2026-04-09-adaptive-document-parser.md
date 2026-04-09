@@ -81,7 +81,8 @@ Add to the end of `backend/src/db/schema.ts`, after the `sessions` table:
 ```typescript
 export const vendorTemplates = pgTable("vendor_templates", {
   id: serial("id").primaryKey(),
-  vendorName: text("vendor_name").notNull().unique(),
+  vendorKey: text("vendor_key").notNull().unique(),
+  vendorName: text("vendor_name").notNull(),
   vendorDomains: text("vendor_domains").array().notNull().default(sql`'{}'::text[]`),
   vendorKeywords: text("vendor_keywords").array().notNull().default(sql`'{}'::text[]`),
   extractionRules: text("extraction_rules").notNull(), // JSON string, parsed at runtime
@@ -101,7 +102,8 @@ Create `backend/drizzle/0005_vendor_templates.sql`:
 ```sql
 CREATE TABLE "vendor_templates" (
   "id" serial PRIMARY KEY NOT NULL,
-  "vendor_name" text NOT NULL UNIQUE,
+  "vendor_key" text NOT NULL UNIQUE,
+  "vendor_name" text NOT NULL,
   "vendor_domains" text[] NOT NULL DEFAULT '{}'::text[],
   "vendor_keywords" text[] NOT NULL DEFAULT '{}'::text[],
   "extraction_rules" text NOT NULL,
@@ -199,6 +201,7 @@ export interface ExtractionRules {
 
 export interface VendorTemplate {
   id: number;
+  vendorKey: string;
   vendorName: string;
   vendorDomains: string[];
   vendorKeywords: string[];
@@ -207,7 +210,22 @@ export interface VendorTemplate {
   failCount: number;
 }
 
+export interface VendorMatch {
+  template: VendorTemplate;
+  confidence: "domain" | "keyword";
+}
+
 export type StepCallback = (step: string, message: string) => void;
+
+export function deriveVendorKey(signals: { domains: string[]; keywords: string[] }): string {
+  if (signals.domains.length > 0) {
+    return signals.domains[0].toLowerCase();
+  }
+  return signals.keywords[0]
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") ?? "unknown";
+}
 ```
 
 - [ ] **Step 2: Verify compiles**
@@ -683,7 +701,10 @@ export function isLlmConfigured(): boolean {
   return !!process.env.OPENAI_API_KEY;
 }
 
-export async function llmExtractAndLearn(text: string): Promise<LlmResult> {
+export async function llmExtractAndLearn(
+  text: string,
+  abortSignal?: AbortSignal
+): Promise<LlmResult> {
   const client = getClient();
 
   const response = await client.chat.completions.create({
@@ -700,7 +721,7 @@ export async function llmExtractAndLearn(text: string): Promise<LlmResult> {
       type: "json_schema",
       json_schema: RESPONSE_SCHEMA,
     },
-  });
+  }, { signal: abortSignal });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Empty LLM response");
@@ -737,11 +758,13 @@ Create `backend/src/services/vendor-detect.ts`:
 import { getDb } from "../db/index.js";
 import { vendorTemplates } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
-import type { VendorTemplate, ExtractionRules } from "./template-types.js";
+import type { VendorTemplate, VendorMatch, ExtractionRules } from "./template-types.js";
+import { deriveVendorKey } from "./template-types.js";
 
 function parseRules(row: typeof vendorTemplates.$inferSelect): VendorTemplate {
   return {
     id: row.id,
+    vendorKey: row.vendorKey,
     vendorName: row.vendorName,
     vendorDomains: row.vendorDomains ?? [],
     vendorKeywords: row.vendorKeywords ?? [],
@@ -760,7 +783,7 @@ export async function loadAllTemplates(): Promise<VendorTemplate[]> {
 export function detectVendor(
   text: string,
   templates: VendorTemplate[]
-): VendorTemplate | null {
+): VendorMatch | null {
   const textLower = text.toLowerCase();
 
   const domainMatches =
@@ -771,17 +794,17 @@ export function detectVendor(
     )
   );
 
-  // Tier 1: domain match
+  // Tier 1: domain match (high confidence — failures count)
   for (const tpl of templates) {
     if (tpl.vendorDomains.some((d) => textDomains.has(d.toLowerCase()))) {
-      return tpl;
+      return { template: tpl, confidence: "domain" };
     }
   }
 
-  // Tier 2: keyword match
+  // Tier 2: keyword match (low confidence — failures do NOT count)
   for (const tpl of templates) {
     if (tpl.vendorKeywords.some((k) => textLower.includes(k.toLowerCase()))) {
-      return tpl;
+      return { template: tpl, confidence: "keyword" };
     }
   }
 
@@ -816,7 +839,9 @@ export async function upsertTemplate(
 ): Promise<void> {
   const db = getDb();
   const rulesJson = JSON.stringify(rules);
+  const vendorKey = deriveVendorKey(rules.vendorSignals);
   const values = {
+    vendorKey,
     vendorName: rules.vendorName,
     vendorDomains: rules.vendorSignals.domains,
     vendorKeywords: rules.vendorSignals.keywords,
@@ -837,7 +862,7 @@ export async function upsertTemplate(
       .insert(vendorTemplates)
       .values(values)
       .onConflictDoUpdate({
-        target: vendorTemplates.vendorName,
+        target: vendorTemplates.vendorKey,
         set: values,
       });
   }
@@ -911,31 +936,36 @@ export async function parseDocument(
   const matched = detectVendor(text, templates);
 
   if (matched) {
+    const tpl = matched.template;
     const isUnreliable =
-      matched.failCount > 3 && matched.successCount < matched.failCount;
+      tpl.failCount > 3 && tpl.successCount < tpl.failCount;
 
     if (!isUnreliable) {
-      onStep("vendor_matched", `Vendor matched: ${matched.vendorName}`);
+      onStep("vendor_matched", `Vendor matched: ${tpl.vendorName}`);
       onStep("applying_template", "Applying learned template...");
 
-      const extracted = applyTemplate(text, matched.extractionRules);
+      const extracted = applyTemplate(text, tpl.extractionRules);
 
       if (extracted.items.length > 0) {
-        incrementSuccess(matched.id).catch(() => {});
+        incrementSuccess(tpl.id).catch(() => {});
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
       }
 
       onStep("template_failed", "Template extraction failed. Falling back to LLM...");
-      incrementFail(matched.id).catch(() => {});
+      // Only count failures from domain-matched templates (keyword matches are false-positive-prone)
+      if (matched.confidence === "domain") {
+        incrementFail(tpl.id).catch(() => {});
+      }
 
-      // Only allow regeneration if template is already unreliable (prevents poisoning)
+      // Only allow regeneration if template is already unreliable AND match was high-confidence
       const canRegenerate =
-        matched.failCount + 1 > 3 && matched.successCount < matched.failCount + 1;
-      return llmPath(text, onStep, abortSignal, canRegenerate ? matched.id : undefined);
+        matched.confidence === "domain" &&
+        tpl.failCount + 1 > 3 && tpl.successCount < tpl.failCount + 1;
+      return llmPath(text, onStep, abortSignal, canRegenerate ? tpl.id : undefined);
     } else {
-      onStep("template_failed", `Template for ${matched.vendorName} is unreliable. Using LLM...`);
-      return llmPath(text, onStep, abortSignal, matched.id);
+      onStep("template_failed", `Template for ${tpl.vendorName} is unreliable. Using LLM...`);
+      return llmPath(text, onStep, abortSignal, tpl.id);
     }
   }
 
@@ -961,7 +991,7 @@ async function llmPath(
 
   // Truncate text to prevent token blowups (invoices are ~500-2000 chars)
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const llmResult = await llmExtractAndLearn(llmText);
+  const llmResult = await llmExtractAndLearn(llmText, abortSignal);
 
   const items: ExtractedItem[] = llmResult.extraction.items.map((item) => ({
     partNumber: item.partNumber,
