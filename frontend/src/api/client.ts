@@ -93,24 +93,35 @@ async function apiInternal<T>(
   if (!res.ok) {
     const text = await res.text();
     let message = "Request failed";
+    let body: Record<string, unknown> | undefined;
     try {
-      const body = JSON.parse(text);
-      message = body.error || message;
+      body = JSON.parse(text);
+      message = typeof (body as any).error === "string" ? (body as any).error : message;
     } catch {
       if (text.includes("Cannot")) message = text.replace(/<[^>]*>/g, "").trim();
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
 
   return res.json();
 }
 
 export class ApiError extends Error {
+  public errorType?: string;
+  public vendor?: string;
+  public domain?: string;
+
   constructor(
     public status: number,
-    message: string
+    message: string,
+    body?: Record<string, unknown>
   ) {
     super(message);
     this.name = "ApiError";
+    if (body) {
+      this.errorType = typeof body.errorType === "string" ? body.errorType : undefined;
+      this.vendor = typeof body.vendor === "string" ? body.vendor : undefined;
+      this.domain = typeof body.domain === "string" ? body.domain : undefined;
+    }
   }
 }
