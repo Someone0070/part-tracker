@@ -1,4 +1,16 @@
 import { PDFParse } from "pdf-parse";
+import crypto from "node:crypto";
+import { getDb } from "../db/index.js";
+import { vendorPresets } from "../db/schema.js";
+import { sql } from "drizzle-orm";
+import {
+  validateExtractionResult,
+  computePdfFingerprint,
+  savePreset,
+  recordPresetSuccess,
+  recordPresetFailure,
+} from "./vendor-presets.js";
+import type { PdfRegexConfig } from "./vendor-presets.js";
 
 export interface ExtractedItem {
   partNumber: string;
@@ -407,7 +419,7 @@ function parseMarcone(text: string): DocumentResult {
 
 const ZAI_CHAT_URL = "https://api.z.ai/api/paas/v4/chat/completions";
 
-async function parseFallback(text: string): Promise<DocumentResult> {
+export async function parseFallback(text: string): Promise<DocumentResult> {
   const apiKey = process.env.ZAI_API_KEY;
   const empty: DocumentResult = {
     vendor: "unknown",
@@ -492,25 +504,124 @@ async function parseFallback(text: string): Promise<DocumentResult> {
   }
 }
 
+// --- Unknown PDF Preset Lookup ---
+
+async function tryUnknownPdfPresets(text: string): Promise<DocumentResult | null> {
+  const db = getDb();
+  const rows = await db.select().from(vendorPresets)
+    .where(sql`${vendorPresets.inputType} = 'pdf' AND ${vendorPresets.vendorKey} LIKE 'unknown:%'`);
+
+  for (const row of rows) {
+    try {
+      const config = JSON.parse(row.selectors) as PdfRegexConfig;
+      if (!config.vendorDetectPattern) continue;
+      if (!new RegExp(config.vendorDetectPattern, "i").test(text)) continue;
+
+      const result = applyPdfRegexConfig(text, config);
+      if (validateExtractionResult(result).valid) {
+        await recordPresetSuccess(row.id);
+        return result;
+      }
+      await recordPresetFailure(row.id);
+    } catch { /* skip malformed */ }
+  }
+  return null;
+}
+
+function applyPdfRegexConfig(text: string, config: PdfRegexConfig): DocumentResult {
+  const items: ExtractedItem[] = [];
+  if (config.itemLinePattern) {
+    const re = new RegExp(config.itemLinePattern, "gm");
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const line = m[0];
+      const pn = config.fields.partNumber ? (line.match(new RegExp(config.fields.partNumber))?.[1] ?? "") : "";
+      const name = config.fields.partName ? (line.match(new RegExp(config.fields.partName))?.[1] ?? "") : "";
+      const qty = config.fields.quantity ? (parseInt(line.match(new RegExp(config.fields.quantity))?.[1] ?? "1") || 1) : 1;
+      const price = config.fields.unitPrice ? (parseFloat(line.match(new RegExp(config.fields.unitPrice))?.[1] ?? "") || null) : null;
+      if (pn || name) items.push({ partNumber: pn, partName: name, quantity: qty, unitPrice: price, shipCost: null, taxPrice: null, brand: findBrand(name) ?? null });
+    }
+  }
+  return {
+    vendor: "unknown",
+    orderNumber: config.orderFields?.orderNumber ? (text.match(new RegExp(config.orderFields.orderNumber))?.[1] ?? null) : null,
+    orderDate: config.orderFields?.orderDate ? (text.match(new RegExp(config.orderFields.orderDate))?.[1] ?? null) : null,
+    technicianName: null, trackingNumber: null, deliveryCourier: null, items, rawText: text,
+  };
+}
+
+// --- PDF Preset Learning ---
+
+async function learnPdfPreset(text: string, llmResult: DocumentResult): Promise<void> {
+  const apiKey = process.env.ZAI_API_KEY;
+  if (!apiKey) return;
+
+  const res = await fetch(ZAI_CHAT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: "glm-4-flash-250414", temperature: 0, max_tokens: 1500,
+      messages: [
+        { role: "system", content: "You generate regex patterns for extracting order data from document text. Reply ONLY with valid JSON." },
+        { role: "user", content: `Given this document text, generate regex patterns. Reply with JSON:\n{"vendorDetectPattern":"regex to identify this vendor","itemLinePattern":"regex matching each item line","fields":{"partNumber":"regex with capture group","partName":"regex with capture group","quantity":"regex with capture group","unitPrice":"regex with capture group"},"orderFields":{"orderNumber":"regex with capture group or null","orderDate":"regex with capture group or null"}}\n\nDocument:\n${text.slice(0, 3000)}` },
+      ],
+    }),
+  });
+  if (!res.ok) return;
+
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const raw = data.choices?.[0]?.message?.content ?? "";
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+
+  let config: PdfRegexConfig;
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!parsed.vendorDetectPattern || !parsed.itemLinePattern) return;
+    config = { type: "pdf", ...parsed };
+  } catch { return; }
+
+  // Verification replay
+  const replay = applyPdfRegexConfig(text, config);
+  if (!validateExtractionResult(replay).valid) return;
+  const minItems = Math.min(replay.items.length, llmResult.items.length);
+  if (Math.abs(replay.items.length - llmResult.items.length) > 1 || minItems === 0) return;
+
+  let nameMatches = 0;
+  for (let i = 0; i < minItems; i++) {
+    const a = replay.items[i].partName.toLowerCase().trim();
+    const b = llmResult.items[i].partName.toLowerCase().trim();
+    if (a === b || (a.length > 0 && b.includes(a.slice(0, Math.floor(a.length * 0.7))))) nameMatches++;
+  }
+  if (nameMatches / minItems < 0.7) return;
+
+  const fp = computePdfFingerprint(text);
+  const vk = "unknown:" + crypto.createHash("sha256").update(config.vendorDetectPattern).digest("hex").slice(0, 12);
+  await savePreset(vk, "pdf", fp, config, text.slice(0, 2000));
+}
+
 // --- Main Entry ---
 
-export async function parseDocument(
-  pdfBase64: string
-): Promise<DocumentResult> {
+export async function parseDocument(pdfBase64: string): Promise<DocumentResult> {
   const buffer = Buffer.from(pdfBase64, "base64");
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   const result = await parser.getText();
   await parser.destroy();
-
   const text = result.text.replace(/\f/g, "\n").trim();
+  if (text.length < 20) throw new Error("Document appears to be empty or image-only");
 
-  if (text.length < 20) {
-    throw new Error("Document appears to be empty or image-only");
+  // Stage 1: Hardcoded parsers with validation gate
+  if (/amazon\.com/i.test(text)) { const r = parseAmazon(text); if (validateExtractionResult(r).valid) return r; }
+  if (/ebay/i.test(text) && /order number/i.test(text)) { const r = parseEbay(text); if (validateExtractionResult(r).valid) return r; }
+  if (/marcone/i.test(text)) { const r = parseMarcone(text); if (validateExtractionResult(r).valid) return r; }
+
+  // Stage 2: Saved presets for unknown PDF vendors
+  const presetResult = await tryUnknownPdfPresets(text);
+  if (presetResult) return presetResult;
+
+  // Stage 3: LLM fallback + fire-and-forget preset learning
+  const llmResult = await parseFallback(text);
+  if (validateExtractionResult(llmResult).valid && llmResult.items.length > 0) {
+    learnPdfPreset(text, llmResult).catch((e) => console.error("PDF preset learning failed:", e));
   }
-
-  if (/amazon\.com/i.test(text)) return parseAmazon(text);
-  if (/ebay/i.test(text) && /order number/i.test(text)) return parseEbay(text);
-  if (/marcone/i.test(text)) return parseMarcone(text);
-
-  return parseFallback(text);
+  return llmResult;
 }
