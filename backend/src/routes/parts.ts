@@ -41,7 +41,7 @@ router.post("/ocr", requireScope("parts:write"), async (req, res) => {
   }
 });
 
-// POST /api/parts/import — extract parts from PDF document
+// POST /api/parts/import -- extract parts from PDF document (SSE stream)
 router.post("/import", requireScope("parts:write"), async (req, res) => {
   const { document } = req.body as { document?: unknown };
 
@@ -50,22 +50,42 @@ router.post("/import", requireScope("parts:write"), async (req, res) => {
     return;
   }
 
-  if (document.length > 10 * 1024 * 1024) {
-    res.status(400).json({ error: "document exceeds 10MB limit" });
+  if (document.length > 12 * 1024 * 1024) {
+    res.status(400).json({ error: "document exceeds 12MB limit" });
     return;
   }
 
+  // Switch to SSE
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Abort on client disconnect to avoid wasted LLM calls
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+
+  const steps: Array<{ step: string; message: string }> = [];
+
+  function sendStep(step: string, message: string) {
+    if (abort.signal.aborted) return;
+    steps.push({ step, message });
+    res.write(`event: step\ndata: ${JSON.stringify({ step, message })}\n\n`);
+  }
+
   try {
-    const result = await parseDocument(document);
-    res.json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("empty or image-only")) {
-      res.status(400).json({ error: message });
-      return;
+    const result = await parseDocument(document, sendStep, abort.signal);
+    if (!abort.signal.aborted) {
+      res.write(`event: result\ndata: ${JSON.stringify({ ...result, steps })}\n\n`);
     }
-    console.error("Document import error:", err);
-    res.status(500).json({ error: "Failed to parse document" });
+    res.end();
+  } catch (err) {
+    if (!abort.signal.aborted) {
+      const message = err instanceof Error ? err.message : "Failed to parse document";
+      res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
+    }
+    res.end();
   }
 });
 
