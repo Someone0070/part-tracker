@@ -92,8 +92,13 @@ export function applyTemplate(
   // 3. Extract totals and distribute proportionally
   const taxRule = rules.totals.find((t) => t.name === "tax");
   const shipRule = rules.totals.find((t) => t.name === "shipping");
-  const tax = extractTotal(text, taxRule?.regex);
-  const shipping = extractTotal(text, shipRule?.regex);
+  let tax = extractTotal(text, taxRule?.regex);
+  let shipping = extractTotal(text, shipRule?.regex);
+
+  // Sanity check: tax or shipping exceeding subtotal means the regex grabbed the wrong number
+  const subtotal = items.reduce((sum, item) => sum + (item.unitPrice ?? 0) * item.quantity, 0);
+  if (tax > subtotal) tax = 0;
+  if (shipping > subtotal) shipping = 0;
 
   if (tax > 0 || shipping > 0) {
     distributeAndNormalize(items, shipping, tax);
