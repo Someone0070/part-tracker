@@ -55,6 +55,21 @@ export const updateApplianceSchema = z.object({
   status: z.enum(["active", "stripped"]).optional(),
 });
 
+export const cookieUploadSchema = z.object({
+  vendorName: z.string().min(1).max(100),
+  domain: z.string().min(3).max(253),
+  cookiesTxt: z.string().min(10).max(500_000),
+  isPreset: z.boolean().optional(),
+});
+
+export const cookieUpdateSchema = z.object({
+  cookiesTxt: z.string().min(10).max(500_000),
+});
+
+export const urlImportSchema = z.object({
+  url: z.string().url().max(2000),
+});
+
 export function validateBody<T extends z.ZodType>(schema: T) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);

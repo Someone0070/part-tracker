@@ -3,7 +3,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { getDb } from "./db/index.js";
-import { seedSettings } from "./db/seed.js";
+import { seedSettings, seedPresetVendors } from "./db/seed.js";
 import { proxySecret } from "./middleware/proxy-secret.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { securityHeaders } from "./middleware/security-headers.js";
@@ -16,6 +16,8 @@ import partsRouter from "./routes/parts.js";
 import settingsRouter from "./routes/settings.js";
 import appliancesRouter from "./routes/appliances.js";
 import ebayRouter from "./routes/ebay.js";
+import vendorCookiesRouter from "./routes/vendor-cookies.js";
+import importRouter from "./routes/import.js";
 import { pollEbayOrders } from "./services/ebay.js";
 
 const app = express();
@@ -29,6 +31,7 @@ app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
 app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
 app.use("/api/parts/ocr", express.json({ limit: "12mb" }));
 app.use("/api/parts/import", express.json({ limit: "12mb" }));
+app.use("/api/vendor-cookies", express.json({ limit: "1mb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 
@@ -84,6 +87,8 @@ app.use("/api/parts", partsRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/ebay", ebayRouter);
 app.use("/api/appliances", appliancesRouter);
+app.use("/api/vendor-cookies", vendorCookiesRouter);
+app.use("/api/import", importRouter);
 
 // Start server
 async function start() {
@@ -95,6 +100,7 @@ async function start() {
 
     // Seed default settings
     await seedSettings(process.env.DEFAULT_PASSWORD || "changeme");
+    await seedPresetVendors();
 
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);

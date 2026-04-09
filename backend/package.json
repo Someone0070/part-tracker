@@ -19,6 +19,7 @@
     "@neondatabase/serverless": "^1.0.2",
     "aws4fetch": "^1.0.20",
     "bcrypt": "^6.0.0",
+    "cheerio": "^1.2.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.1",
     "drizzle-orm": "^0.45.2",
@@ -27,6 +28,7 @@
     "jsonwebtoken": "^9.0.3",
     "openai": "^6.34.0",
     "pdf-parse": "^2.4.5",
+    "playwright-core": "^1.59.1",
     "rate-limiter-flexible": "^11.0.0",
     "re2": "^1.24.0",
     "zod": "^4.3.6"

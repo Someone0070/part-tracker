@@ -1,6 +1,6 @@
 {
-  "id": "a1b2c3d4-1111-4aaa-bbbb-000000000003",
-  "prevId": "5be0878b-135b-494a-b309-0ee92fcf80bd",
+  "id": "2b6957f4-7c40-4009-a0f1-e273ab733064",
+  "prevId": "a1b2c3d4-2222-4aaa-bbbb-000000000004",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -72,7 +72,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "appliances_created_at_idx": {
+          "name": "appliances_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -122,7 +138,38 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "cross_references_part_id_idx": {
+          "name": "cross_references_part_id_idx",
+          "columns": [
+            {
+              "expression": "part_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cross_references_cross_ref_pn_idx": {
+          "name": "cross_references_cross_ref_pn_idx",
+          "columns": [
+            {
+              "expression": "cross_ref_part_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "cross_references_part_id_parts_id_fk": {
           "name": "cross_references_part_id_parts_id_fk",
@@ -299,7 +346,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "inventory_events_part_created_idx": {
+          "name": "inventory_events_part_created_idx",
+          "columns": [
+            {
+              "expression": "part_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "inventory_events_part_id_parts_id_fk": {
           "name": "inventory_events_part_id_parts_id_fk",
@@ -396,7 +465,38 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "parts_updated_at_idx": {
+          "name": "parts_updated_at_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "parts_appliance_id_idx": {
+          "name": "parts_appliance_id_idx",
+          "columns": [
+            {
+              "expression": "appliance_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "parts_appliance_id_appliances_id_fk": {
           "name": "parts_appliance_id_appliances_id_fk",
@@ -581,6 +681,184 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.vendor_cookies": {
+      "name": "vendor_cookies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "vendor_name": {
+          "name": "vendor_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "domain": {
+          "name": "domain",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cookie_data": {
+          "name": "cookie_data",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "auth_cookie_expiry": {
+          "name": "auth_cookie_expiry",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_preset": {
+          "name": "is_preset",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unconfigured'"
+        },
+        "last_tested_at": {
+          "name": "last_tested_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "vendor_cookies_domain_unique": {
+          "name": "vendor_cookies_domain_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "domain"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.vendor_presets": {
+      "name": "vendor_presets",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "vendor_key": {
+          "name": "vendor_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_type": {
+          "name": "input_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "page_fingerprint": {
+          "name": "page_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selectors": {
+          "name": "selectors",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sample_snippet": {
+          "name": "sample_snippet",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "success_count": {
+          "name": "success_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "fail_count": {
+          "name": "fail_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "vendor_preset_unique": {
+          "name": "vendor_preset_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "vendor_key",
+            "input_type",
+            "page_fingerprint"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

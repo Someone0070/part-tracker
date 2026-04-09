@@ -6,6 +6,7 @@ import { Toggle } from "../components/Toggle";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CookieManager } from "../components/CookieManager";
 
 const ALL_SCOPES = [
   { value: "parts:read", label: "Parts - Read" },
@@ -89,6 +90,12 @@ export function Settings() {
 
         {/* API Key */}
         <ApiKeySection settings={settings} onRefresh={refresh} />
+
+        {/* Import Cookies */}
+        <section>
+          <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Import Cookies</h2>
+          <CookieManager />
+        </section>
 
         {/* Account */}
         <section>

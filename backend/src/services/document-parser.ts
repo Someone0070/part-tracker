@@ -12,6 +12,51 @@ import {
 } from "./vendor-detect.js";
 
 export type { DocumentResult, ExtractedItem };
+export { distributeAndNormalize } from "./template-apply.js";
+
+// --- Part number patterns (shared with HTML parser) ---
+
+const PART_PATTERNS: RegExp[] = [
+  /\b(WP[A-Z]?\d{6,12})\b/i,
+  /\b(AP\d{7,10})\b/i,
+  /\b(PS\d{7,11})\b/i,
+  /\b(DC\d{2}-\d{4,6}[A-Z]?)\b/i,
+  /\b(WR\d{2}[A-Z]\d{4,6})\b/i,
+  /\b(WB\d{2}[A-Z]\d{4,6})\b/i,
+  /\b(WH\d{2}[A-Z]\d{4,6})\b/i,
+  /\b(WE\d{2}[A-Z]\d{4,6})\b/i,
+  /\b(DE\d{2}[A-Z]\d{4,6})\b/i,
+  /\b(DD\d{2}-\d{5,8}[A-Z]?)\b/i,
+  /\b(W\d{8,10})\b/i,
+  /\b(EAP\d{6,10})\b/i,
+  /\b(AH\d{6,10})\b/i,
+  /\b(\d{6,8}[A-Z]{1,2})\b/,
+];
+
+const BRAND_PATTERN =
+  /\b(whirlpool|kenmore|ge|samsung|lg|maytag|frigidaire|bosch|kitchenaid|amana|hotpoint|electrolux|haier|hisense)\b/i;
+
+export function findPartNumbers(text: string): string[] {
+  const matches: Array<{ pn: string; index: number }> = [];
+  const seen = new Set<string>();
+  for (const pattern of PART_PATTERNS) {
+    const re = new RegExp(pattern, "gi");
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const pn = m[1].toUpperCase();
+      if (!seen.has(pn)) {
+        seen.add(pn);
+        matches.push({ pn, index: m.index });
+      }
+    }
+  }
+  return matches.sort((a, b) => a.index - b.index).map((m) => m.pn);
+}
+
+export function findBrand(text: string): string | null {
+  const m = BRAND_PATTERN.exec(text);
+  return m ? m[1].toLowerCase() : null;
+}
 
 const MAX_LLM_TEXT = 10_000;
 
