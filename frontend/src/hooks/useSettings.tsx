@@ -18,7 +18,7 @@ export interface AppSettings {
 
 interface SettingsContextValue {
   settings: AppSettings | null;
-  setSettings: (s: AppSettings) => void;
+  setSettings: (s: AppSettings | null) => void;
   refresh: () => Promise<AppSettings | null>;
 }
 
@@ -27,9 +27,9 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState<AppSettings | null>(null);
 
-  const setSettings = useCallback((s: AppSettings) => {
+  const setSettings = useCallback((s: AppSettings | null) => {
     setSettingsState(s);
-    document.documentElement.classList.toggle("dark", s.darkMode);
+    document.documentElement.classList.toggle("dark", !!s?.darkMode);
   }, []);
 
   const refresh = useCallback(async () => {

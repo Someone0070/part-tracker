@@ -6,6 +6,7 @@ import { eq, isNotNull, desc, sql } from "drizzle-orm";
 import { encrypt } from "../services/crypto.js";
 import { buildAuthUrl, exchangeCodeForTokens } from "../services/ebay.js";
 import { ebayCallbackLimiter } from "../middleware/rate-limit.js";
+import { invalidateSettingsSummaryCache } from "../services/settings-summary.js";
 
 const router = Router();
 
@@ -73,6 +74,7 @@ router.get("/callback", ebayCallbackLimiter, async (req, res) => {
         ebayEnabled: true,
       })
       .where(eq(settings.id, 1));
+    invalidateSettingsSummaryCache();
 
     const [existingWatermark] = await db.select().from(ebayPollWatermark).limit(1);
     if (!existingWatermark) {
@@ -101,6 +103,7 @@ router.post("/disconnect", async (req, res) => {
         ebayTokenExpiresAt: null,
       })
       .where(eq(settings.id, 1));
+    invalidateSettingsSummaryCache();
 
     res.json({ ok: true });
   } catch (err) {

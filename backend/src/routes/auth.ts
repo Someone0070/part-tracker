@@ -4,10 +4,15 @@ import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import { getDb } from "../db/index.js";
 import { invalidateAuthCache } from "../middleware/auth.js";
-import { settings, sessions, ebayProcessedOrders } from "../db/schema.js";
-import { eq, sql, isNotNull } from "drizzle-orm";
+import { settings, sessions } from "../db/schema.js";
+import { eq, sql } from "drizzle-orm";
 import { validateBody, loginSchema, changePasswordSchema } from "../middleware/validate.js";
 import { loginLimiter, refreshLimiter } from "../middleware/rate-limit.js";
+import {
+  getCachedSettingsSnapshot,
+  invalidateSettingsSummaryCache,
+  toPublicSettingsSummary,
+} from "../services/settings-summary.js";
 
 const router = Router();
 
@@ -50,9 +55,17 @@ router.post("/verify", loginLimiter, validateBody(loginSchema), async (req, res)
     await db.insert(sessions).values({ refreshTokenHash, expiresAt });
 
     const accessToken = generateAccessToken(row.passwordVersion);
+    const settingsSnapshot = await getCachedSettingsSnapshot();
+    if (!settingsSnapshot) {
+      res.status(500).json({ error: "Settings not initialized" });
+      return;
+    }
 
     res.cookie("refresh_token", refreshToken, COOKIE_OPTIONS);
-    res.json({ accessToken });
+    res.json({
+      accessToken,
+      settings: toPublicSettingsSummary(settingsSnapshot),
+    });
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ error: "Internal error" });
@@ -81,39 +94,16 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
       return;
     }
 
-    const [settingsRow] = await db.select().from(settings).limit(1);
-    if (!settingsRow) {
+    const settingsSnapshot = await getCachedSettingsSnapshot();
+    if (!settingsSnapshot) {
       res.status(500).json({ error: "Settings not initialized" });
       return;
     }
 
-    const [quarantine] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(ebayProcessedOrders)
-      .where(isNotNull(ebayProcessedOrders.quarantineReason));
-
-    let scopes: string[] = [];
-    try {
-      scopes = settingsRow.apiKeyScopes ? JSON.parse(settingsRow.apiKeyScopes) : [];
-    } catch { /* empty */ }
-
-    const accessToken = generateAccessToken(settingsRow.passwordVersion);
+    const accessToken = generateAccessToken(settingsSnapshot.passwordVersion);
     res.json({
       accessToken,
-      settings: {
-        crossRefEnabled: settingsRow.crossRefEnabled,
-        darkMode: settingsRow.darkMode,
-        ebay: {
-          enabled: settingsRow.ebayEnabled,
-          connected: !!settingsRow.ebayRefreshToken,
-          quarantinedCount: Number(quarantine.count),
-        },
-        apiKey: {
-          exists: !!settingsRow.apiKeyHash,
-          prefix: settingsRow.apiKeyPrefix || null,
-          scopes,
-        },
-      },
+      settings: toPublicSettingsSummary(settingsSnapshot),
     });
   } catch (err) {
     console.error("Refresh error:", err);
@@ -163,6 +153,7 @@ router.post("/change-password", validateBody(changePasswordSchema), async (req, 
 
     await db.delete(sessions);
     invalidateAuthCache();
+    invalidateSettingsSummaryCache();
 
     res.clearCookie("refresh_token", { path: "/api/auth" });
     res.json({ ok: true });

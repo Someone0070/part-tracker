@@ -20,6 +20,11 @@ interface AuthContextValue {
   ) => Promise<void>;
 }
 
+interface AuthResponse {
+  accessToken: string;
+  settings?: AppSettings;
+}
+
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -53,22 +58,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setSettings]);
 
   const login = useCallback(async (password: string) => {
-    const data = await api<{ accessToken: string }>("/api/auth/verify", {
+    const data = await api<AuthResponse>("/api/auth/verify", {
       method: "POST",
       body: JSON.stringify({ password }),
     });
     setAccessToken(data.accessToken);
+    if (data.settings) {
+      setSettings(data.settings);
+    }
     setIsAuthenticated(true);
-  }, []);
+  }, [setSettings]);
 
   const logout = useCallback(async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       setAccessToken(null);
+      setSettings(null);
       setIsAuthenticated(false);
     }
-  }, []);
+  }, [setSettings]);
 
   const changePassword = useCallback(
     async (currentPassword: string, newPassword: string) => {
@@ -77,9 +86,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ currentPassword, newPassword }),
       });
       setAccessToken(null);
+      setSettings(null);
       setIsAuthenticated(false);
     },
-    []
+    [setSettings]
   );
 
   return (
