@@ -88,6 +88,29 @@ describe("parseHtmlWithSelectors", () => {
     assert.equal(result.items[0].quantity, 1);
   });
 
+  it("built-in Amazon config extracts exactly 2 items (no double-counting)", () => {
+    const config: HtmlSelectorConfig = {
+      type: "html",
+      itemContainer: ".a-fixed-left-grid.shipment",
+      fields: {
+        partName: ".yohtmlc-product-title",
+        unitPrice: ".a-color-price",
+        quantity: ".item-view-qty",
+      },
+      orderFields: {
+        orderNumber: ".order-date-invoice-item .a-color-secondary",
+        orderDate: ".order-date-invoice-item span:not(.a-color-secondary)",
+        totalShipping: ".shipping-total",
+        totalTax: ".tax-total",
+      },
+    };
+    const result = parseHtmlWithSelectors(AMAZON_HTML, config, "amazon");
+    assert.equal(result.items.length, 2, `Expected 2 items, got ${result.items.length}`);
+    assert.ok(result.orderNumber?.includes("114-9176254"), `orderNumber should contain order ID, got: ${result.orderNumber}`);
+    assert.ok(result.orderDate?.includes("April"), `orderDate should contain month, got: ${result.orderDate}`);
+    assert.notEqual(result.orderNumber, result.orderDate, "orderNumber and orderDate must differ");
+  });
+
   it("extracts order-level fields", () => {
     const config: HtmlSelectorConfig = {
       type: "html",

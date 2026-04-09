@@ -31,6 +31,7 @@ app.use("/api/appliances/ocr", express.json({ limit: "12mb" }));
 app.use("/api/appliances/upload", express.json({ limit: "12mb" }));
 app.use("/api/parts/ocr", express.json({ limit: "12mb" }));
 app.use("/api/parts/import", express.json({ limit: "12mb" }));
+app.use("/api/vendor-cookies", express.json({ limit: "1mb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 

@@ -138,7 +138,7 @@ export function parseHtmlWithSelectors(
 
 const AMAZON_HTML_CONFIG: HtmlSelectorConfig = {
   type: "html",
-  itemContainer: ".a-fixed-left-grid.shipment, .a-fixed-left-grid-inner",
+  itemContainer: ".a-fixed-left-grid.shipment",
   fields: {
     partName: ".yohtmlc-product-title",
     unitPrice: ".a-color-price",
@@ -146,7 +146,7 @@ const AMAZON_HTML_CONFIG: HtmlSelectorConfig = {
   },
   orderFields: {
     orderNumber: ".order-date-invoice-item .a-color-secondary",
-    orderDate: ".order-date-invoice-item span",
+    orderDate: ".order-date-invoice-item span:not(.a-color-secondary)",
     totalShipping: ".shipping-total",
     totalTax: ".tax-total",
   },
