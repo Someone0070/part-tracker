@@ -1,0 +1,7 @@
+# Netscape HTTP Cookie File
+.amazon.com	TRUE	/	FALSE	1749500000	session-id	123-456-789
+.amazon.com	TRUE	/	FALSE	1749500000	at-main	someAuthToken
+.amazon.com	TRUE	/	TRUE	0	x-main	xMainValue
+#HttpOnly_.amazon.com	TRUE	/	FALSE	1749500000	sess-at-main	sessToken
+.amazon.com	TRUE	/	FALSE	1680000000	ad-id	expired-ad-cookie
+amazon.com	FALSE	/	FALSE	1749500000	host-only-cookie	hostValue
