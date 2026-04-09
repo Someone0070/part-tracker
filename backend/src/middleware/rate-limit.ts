@@ -41,3 +41,12 @@ export const ebayCallbackLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+export const urlImportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => getClientIp(req),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many URL import requests, please wait", errorType: "rate_limit" },
+});

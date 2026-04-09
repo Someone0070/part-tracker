@@ -17,6 +17,7 @@ import settingsRouter from "./routes/settings.js";
 import appliancesRouter from "./routes/appliances.js";
 import ebayRouter from "./routes/ebay.js";
 import vendorCookiesRouter from "./routes/vendor-cookies.js";
+import importRouter from "./routes/import.js";
 import { pollEbayOrders } from "./services/ebay.js";
 
 const app = express();
@@ -86,6 +87,7 @@ app.use("/api/settings", settingsRouter);
 app.use("/api/ebay", ebayRouter);
 app.use("/api/appliances", appliancesRouter);
 app.use("/api/vendor-cookies", vendorCookiesRouter);
+app.use("/api/import", importRouter);
 
 // Start server
 async function start() {
