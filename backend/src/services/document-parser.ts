@@ -1,5 +1,5 @@
 import { PDFParse } from "pdf-parse";
-import type { DocumentResult, ExtractedItem, StepCallback, VendorTemplate } from "./template-types.js";
+import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate } from "./template-validate.js";
 import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured } from "./template-llm.js";
@@ -127,8 +127,6 @@ export async function parseDocument(
             if (!extracted.trackingNumber && fill.trackingNumber) extracted.trackingNumber = fill.trackingNumber;
             if (!extracted.deliveryCourier && fill.deliveryCourier) extracted.deliveryCourier = fill.deliveryCourier;
 
-            // Background: repair the template so it doesn't need fill-in next time
-            repairTemplateInBackground(text, tpl, fill);
           } catch {
             // Non-critical -- items still extracted
           }
@@ -311,61 +309,3 @@ function verifyTemplateInBackground(
   });
 }
 
-/**
- * Fire-and-forget: use fill-in values to repair template regex patterns.
- * Builds a fake LlmExtraction from the fill-in, finds failures, and
- * sends them through the repair loop. Updates template in DB if fixes work.
- */
-function repairTemplateInBackground(
-  text: string,
-  tpl: VendorTemplate,
-  fill: import("./template-llm.js").TemplateFillIn
-): void {
-  const fakeExtraction = {
-    vendor: tpl.vendorName,
-    orderNumber: fill.orderNumber,
-    orderDate: fill.orderDate,
-    technicianName: fill.technicianName,
-    trackingNumber: fill.trackingNumber,
-    deliveryCourier: fill.deliveryCourier,
-    totalTax: fill.totalTax,
-    totalShipping: fill.totalShipping,
-    items: [], // items already work, only repairing fields/totals
-  };
-
-  const failures = findFieldFailures(text, tpl.extractionRules, fakeExtraction);
-  if (failures.length === 0) return;
-
-  llmRepairRegex(failures).then(async (repairs) => {
-    const rules = { ...tpl.extractionRules };
-    rules.fields = [...rules.fields];
-    rules.totals = [...rules.totals];
-    let changed = false;
-
-    for (const repair of repairs) {
-      const m = safeMatch(text, repair.regex, "s");
-      if (!m?.[repair.group]) continue;
-
-      if (repair.type === "field") {
-        const idx = rules.fields.findIndex((f) => f.name === repair.name);
-        const rule = { name: repair.name, regex: repair.regex, group: repair.group };
-        if (idx >= 0) rules.fields[idx] = rule;
-        else rules.fields.push(rule);
-        changed = true;
-      } else if (repair.type === "total") {
-        const idx = rules.totals.findIndex((t) => t.name === repair.name);
-        const rule = { name: repair.name, regex: repair.regex };
-        if (idx >= 0) rules.totals[idx] = rule;
-        else rules.totals.push(rule);
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      await upsertTemplate(rules, tpl.id);
-      console.log(`Template ${tpl.id} (${tpl.vendorName}) auto-repaired ${repairs.length} field(s)`);
-    }
-  }).catch(() => {
-    // Background repair failure is non-critical
-  });
-}
