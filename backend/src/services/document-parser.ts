@@ -2,7 +2,7 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate } from "./template-validate.js";
-import { llmExtract, llmExtractTotals, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -94,17 +94,26 @@ export async function parseDocument(
       const extracted = applyTemplate(text, tpl.extractionRules);
 
       if (extracted.items.length > 0) {
-        // If template has no totals or regex extracted 0, do a cheap LLM totals call
+        // Fill in missing fields (totals + metadata) with a cheap nano call
         const hasTotals = extracted.items.some((i) => (i.shipCost ?? 0) > 0 || (i.taxPrice ?? 0) > 0);
-        if (!hasTotals && isLlmConfigured()) {
-          onStep("extracting_totals", "Fetching tax/shipping totals...");
+        const missingMeta = !extracted.orderNumber && !extracted.technicianName && !extracted.trackingNumber;
+        if ((!hasTotals || missingMeta) && isLlmConfigured()) {
+          onStep("filling_metadata", "Fetching missing fields...");
           try {
-            const totals = await llmExtractTotals(text, abortSignal);
-            const tax = totals.totalTax ?? 0;
-            const shipping = totals.totalShipping ?? 0;
-            if ((tax > 0 || shipping > 0) && extracted.items.length > 0) {
-              distributeAndNormalize(extracted.items, shipping, tax);
+            const fill = await llmFillIn(text, abortSignal);
+            if (!hasTotals) {
+              const tax = fill.totalTax ?? 0;
+              const shipping = fill.totalShipping ?? 0;
+              if ((tax > 0 || shipping > 0) && extracted.items.length > 0) {
+                distributeAndNormalize(extracted.items, shipping, tax);
+              }
             }
+            // Fill missing metadata (don't overwrite what the template extracted)
+            if (!extracted.orderNumber && fill.orderNumber) extracted.orderNumber = fill.orderNumber;
+            if (!extracted.orderDate && fill.orderDate) extracted.orderDate = fill.orderDate;
+            if (!extracted.technicianName && fill.technicianName) extracted.technicianName = fill.technicianName;
+            if (!extracted.trackingNumber && fill.trackingNumber) extracted.trackingNumber = fill.trackingNumber;
+            if (!extracted.deliveryCourier && fill.deliveryCourier) extracted.deliveryCourier = fill.deliveryCourier;
           } catch {
             // Non-critical -- items still extracted
           }

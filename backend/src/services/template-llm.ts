@@ -237,51 +237,65 @@ export async function llmGenerateTemplate(
   return JSON.parse(content) as ExtractionRules;
 }
 
-const TOTALS_SCHEMA = {
-  name: "invoice_totals",
+export interface TemplateFillIn {
+  orderNumber: string | null;
+  orderDate: string | null;
+  technicianName: string | null;
+  trackingNumber: string | null;
+  deliveryCourier: string | null;
+  totalTax: number | null;
+  totalShipping: number | null;
+}
+
+const FILL_IN_SCHEMA = {
+  name: "invoice_fill_in",
   strict: true,
   schema: {
     type: "object",
     properties: {
+      orderNumber: { type: ["string", "null"] },
+      orderDate: { type: ["string", "null"] },
+      technicianName: { type: ["string", "null"] },
+      trackingNumber: { type: ["string", "null"] },
+      deliveryCourier: { type: ["string", "null"] },
       totalTax: { type: ["number", "null"] },
       totalShipping: { type: ["number", "null"] },
     },
-    required: ["totalTax", "totalShipping"],
+    required: ["orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping"],
     additionalProperties: false,
   },
 };
 
 /**
- * Cheap nano call to extract just tax and shipping totals.
- * Used when a saved template extracts items but has no working totals regex.
- * Sends only the last ~1500 chars (summary/totals area) to minimize tokens.
+ * Cheap nano call to fill in fields the template regex couldn't extract.
+ * Used when a saved template extracts items but misses metadata/totals.
  */
-export async function llmExtractTotals(
+export async function llmFillIn(
   text: string,
   abortSignal?: AbortSignal
-): Promise<{ totalTax: number | null; totalShipping: number | null }> {
+): Promise<TemplateFillIn> {
   const client = getClient();
-  // Totals are almost always near the end of the document
-  const snippet = text.length > 1500 ? text.slice(-1500) : text;
+  // Trim to keep token cost low
+  const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
 
   const response = await client.chat.completions.create(
     {
       model: "gpt-5.4-nano",
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract the total tax amount and total shipping/delivery amount from this invoice text. Return null if not found." },
+        { role: "system", content: "Extract order metadata from this invoice: order number, order date, technician/recipient name, tracking number, delivery courier, total tax, and total shipping. Return null for anything not found." },
         { role: "user", content: snippet },
       ],
       response_format: {
         type: "json_schema",
-        json_schema: TOTALS_SCHEMA as any,
+        json_schema: FILL_IN_SCHEMA as any,
       },
     },
     { signal: abortSignal }
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) return { totalTax: null, totalShipping: null };
+  if (!content) return { orderNumber: null, orderDate: null, technicianName: null, trackingNumber: null, deliveryCourier: null, totalTax: null, totalShipping: null };
 
   return JSON.parse(content);
 }
