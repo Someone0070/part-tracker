@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, boolean, timestamp, unique, check } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, boolean, timestamp, unique, check, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const parts = pgTable("parts", {
@@ -15,6 +15,8 @@ export const parts = pgTable("parts", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
   check("listed_quantity_check", sql`${table.listedQuantity} >= 0 AND ${table.listedQuantity} <= ${table.quantity}`),
+  index("parts_updated_at_idx").on(table.updatedAt),
+  index("parts_appliance_id_idx").on(table.applianceId),
 ]);
 
 export const appliances = pgTable("appliances", {
@@ -28,7 +30,9 @@ export const appliances = pgTable("appliances", {
   status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("appliances_created_at_idx").on(table.createdAt),
+]);
 
 export const crossReferences = pgTable("cross_references", {
   id: serial("id").primaryKey(),
@@ -39,6 +43,8 @@ export const crossReferences = pgTable("cross_references", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   unique("cross_ref_unique").on(table.partId, table.crossRefPartNumber),
+  index("cross_references_part_id_idx").on(table.partId),
+  index("cross_references_cross_ref_pn_idx").on(table.crossRefPartNumber),
 ]);
 
 export const settings = pgTable("settings", {
@@ -65,7 +71,9 @@ export const inventoryEvents = pgTable("inventory_events", {
   quantityChange: integer("quantity_change").notNull(),
   note: text("note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("inventory_events_part_created_idx").on(table.partId, table.createdAt),
+]);
 
 export const ebayProcessedOrders = pgTable("ebay_processed_orders", {
   id: serial("id").primaryKey(),

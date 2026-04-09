@@ -74,13 +74,16 @@ router.get("/", requireScope("parts:read"), async (req, res) => {
   try {
     const db = getDb();
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
-    const limit = Math.min(parseInt(String(req.query.limit)) || 100, 500);
+    const limit = Math.min(parseInt(String(req.query.limit)) || 50, 500);
     const offset = parseInt(String(req.query.offset)) || 0;
 
     let query = db.select().from(parts);
     if (search) {
       const normalized = normalizePartNumber(search);
-      query = query.where(ilike(parts.partNumber, `%${normalized}%`)) as typeof query;
+      // Use trigram similarity (pg_trgm GIN index) for substring search
+      query = query.where(
+        sql`${parts.partNumber} % ${normalized} OR ${parts.partNumber} ILIKE ${'%' + normalized + '%'}`
+      ) as typeof query;
     }
 
     // Sort: out-of-stock to bottom, then by most recently updated

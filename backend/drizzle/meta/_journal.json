@@ -29,6 +29,13 @@
       "when": 1775510400000,
       "tag": "0003_add_trgm_index",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775596800000,
+      "tag": "0004_add_performance_indexes",
+      "breakpoints": true
     }
   ]
 }

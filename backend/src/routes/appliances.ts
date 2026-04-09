@@ -81,7 +81,7 @@ router.post("/upload", requireScope("appliances:write"), async (req, res) => {
 router.get("/", requireScope("appliances:read"), async (req, res) => {
   try {
     const db = getDb();
-    const limit = Math.min(parseInt(String(req.query.limit)) || 100, 500);
+    const limit = Math.min(parseInt(String(req.query.limit)) || 50, 500);
     const offset = parseInt(String(req.query.offset)) || 0;
     const results = await db.select().from(appliances).orderBy(desc(appliances.createdAt)).limit(limit).offset(offset);
     res.json(results.map(applianceToJson));
