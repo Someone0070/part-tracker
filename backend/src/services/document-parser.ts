@@ -149,19 +149,21 @@ async function llmPath(
     brand: item.brand,
   }));
 
-  // Extract totals using the generated template patterns
-  let tax = 0;
-  let shipping = 0;
+  // Extract totals: prefer LLM-extracted values, fall back to regex
   const templateRules = llmResult.template;
-  try {
-    const taxRule = templateRules.totals.find((t) => t.name === "tax");
-    const shipRule = templateRules.totals.find((t) => t.name === "shipping");
-    const taxMatch = taxRule ? safeMatch(text, taxRule.regex, "s") : null;
-    const shipMatch = shipRule ? safeMatch(text, shipRule.regex, "s") : null;
-    tax = taxMatch?.[1] ? parseFloat(taxMatch[1]) : 0;
-    shipping = shipMatch?.[1] ? parseFloat(shipMatch[1]) : 0;
-  } catch {
-    // Totals extraction failed
+  let tax = llmResult.extraction.totalTax ?? 0;
+  let shipping = llmResult.extraction.totalShipping ?? 0;
+  if (tax === 0 && shipping === 0) {
+    try {
+      const taxRule = templateRules.totals.find((t) => t.name === "tax");
+      const shipRule = templateRules.totals.find((t) => t.name === "shipping");
+      const taxMatch = taxRule ? safeMatch(text, taxRule.regex, "s") : null;
+      const shipMatch = shipRule ? safeMatch(text, shipRule.regex, "s") : null;
+      tax = taxMatch?.[1] ? parseFloat(taxMatch[1]) : 0;
+      shipping = shipMatch?.[1] ? parseFloat(shipMatch[1]) : 0;
+    } catch {
+      // Totals extraction failed
+    }
   }
 
   if ((tax > 0 || shipping > 0) && items.length > 0) {

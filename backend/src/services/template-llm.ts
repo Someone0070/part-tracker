@@ -17,6 +17,8 @@ export interface LlmResult {
     technicianName: string | null;
     trackingNumber: string | null;
     deliveryCourier: string | null;
+    totalTax: number | null;
+    totalShipping: number | null;
     items: LlmExtractionItem[];
   };
   template: ExtractionRules;
@@ -36,7 +38,8 @@ CRITICAL rules for the template:
 - Do NOT match payment lines, subtotal lines, or footer text with the row pattern
 - For vendor signals, extract the company domain and a unique identifying phrase
 - fields is an array of {name, regex, group} objects. Use names like "orderNumber", "orderDate", "technicianName", "trackingNumber", "courier"
-- totals is an array of {name, regex} objects. Use names "tax" and "shipping" for the total extraction patterns`;
+- totals is an array of {name, regex} objects. Use names "tax" and "shipping" for the total extraction patterns
+- ALWAYS extract totalTax and totalShipping in the extraction object. Look for tax/shipping amounts even if they are in unusual formats (stacked labels then values, summary tables, etc.)`;
 
 const RESPONSE_SCHEMA = {
   name: "invoice_extraction",
@@ -53,6 +56,8 @@ const RESPONSE_SCHEMA = {
           technicianName: { type: ["string", "null"] },
           trackingNumber: { type: ["string", "null"] },
           deliveryCourier: { type: ["string", "null"] },
+          totalTax: { type: ["number", "null"] },
+          totalShipping: { type: ["number", "null"] },
           items: {
             type: "array",
             items: {
@@ -69,7 +74,7 @@ const RESPONSE_SCHEMA = {
             },
           },
         },
-        required: ["vendor", "orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "items"],
+        required: ["vendor", "orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping", "items"],
         additionalProperties: false,
       },
       template: {
