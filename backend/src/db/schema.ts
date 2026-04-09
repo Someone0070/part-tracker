@@ -98,3 +98,16 @@ export const sessions = pgTable("sessions", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const vendorTemplates = pgTable("vendor_templates", {
+  id: serial("id").primaryKey(),
+  vendorKey: text("vendor_key").notNull().unique(),
+  vendorName: text("vendor_name").notNull(),
+  vendorDomains: text("vendor_domains").array().notNull().default(sql`'{}'::text[]`),
+  vendorKeywords: text("vendor_keywords").array().notNull().default(sql`'{}'::text[]`),
+  extractionRules: text("extraction_rules").notNull(),
+  successCount: integer("success_count").notNull().default(0),
+  failCount: integer("fail_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
