@@ -7,6 +7,7 @@ import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CookieManager } from "../components/CookieManager";
+import { TemplateManager } from "../components/TemplateManager";
 
 const ALL_SCOPES = [
   { value: "parts:read", label: "Parts - Read" },
@@ -90,6 +91,12 @@ export function Settings() {
 
         {/* API Key */}
         <ApiKeySection settings={settings} onRefresh={refresh} />
+
+        {/* Learned Templates */}
+        <section>
+          <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Learned Templates</h2>
+          <TemplateManager />
+        </section>
 
         {/* Import Cookies */}
         <section>
