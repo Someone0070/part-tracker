@@ -98,3 +98,32 @@ export const sessions = pgTable("sessions", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const vendorCookies = pgTable("vendor_cookies", {
+  id: serial("id").primaryKey(),
+  vendorName: text("vendor_name").notNull(),
+  domain: text("domain").notNull().unique(),
+  cookieData: text("cookie_data").notNull(),
+  authCookieExpiry: timestamp("auth_cookie_expiry"),
+  isPreset: boolean("is_preset").notNull().default(false),
+  status: text("status").notNull().default("unconfigured"),
+  lastTestedAt: timestamp("last_tested_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const vendorPresets = pgTable("vendor_presets", {
+  id: serial("id").primaryKey(),
+  vendorKey: text("vendor_key").notNull(),
+  inputType: text("input_type").notNull(),
+  pageFingerprint: text("page_fingerprint").notNull(),
+  selectors: text("selectors").notNull(),
+  sampleSnippet: text("sample_snippet"),
+  successCount: integer("success_count").notNull().default(0),
+  failCount: integer("fail_count").notNull().default(0),
+  lastUsedAt: timestamp("last_used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  unique("vendor_preset_unique").on(table.vendorKey, table.inputType, table.pageFingerprint),
+]);

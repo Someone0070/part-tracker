@@ -3,7 +3,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { getDb } from "./db/index.js";
-import { seedSettings } from "./db/seed.js";
+import { seedSettings, seedPresetVendors } from "./db/seed.js";
 import { proxySecret } from "./middleware/proxy-secret.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { securityHeaders } from "./middleware/security-headers.js";
@@ -95,6 +95,7 @@ async function start() {
 
     // Seed default settings
     await seedSettings(process.env.DEFAULT_PASSWORD || "changeme");
+    await seedPresetVendors();
 
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);

@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
+import { eq } from "drizzle-orm";
 import { getDb } from "./index.js";
-import { settings } from "./schema.js";
+import { settings, vendorCookies } from "./schema.js";
 
 export async function seedSettings(defaultPassword: string) {
   const db = getDb();
@@ -12,4 +13,31 @@ export async function seedSettings(defaultPassword: string) {
     passwordHash: hash,
   });
   console.log("Settings row seeded with default password");
+}
+
+export async function seedPresetVendors() {
+  const db = getDb();
+  const presets = [
+    { vendorName: "Amazon", domain: "amazon.com" },
+    { vendorName: "eBay", domain: "ebay.com" },
+    { vendorName: "Marcone", domain: "marcone.com" },
+  ];
+
+  for (const preset of presets) {
+    const [existing] = await db
+      .select({ id: vendorCookies.id })
+      .from(vendorCookies)
+      .where(eq(vendorCookies.domain, preset.domain))
+      .limit(1);
+    if (existing) continue;
+
+    await db.insert(vendorCookies).values({
+      vendorName: preset.vendorName,
+      domain: preset.domain,
+      cookieData: "",
+      isPreset: true,
+      status: "unconfigured",
+    });
+  }
+  console.log("Preset vendor rows seeded");
 }
