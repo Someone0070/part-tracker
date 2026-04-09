@@ -8,6 +8,7 @@ import { proxySecret } from "./middleware/proxy-secret.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { securityHeaders } from "./middleware/security-headers.js";
 import { generalLimiter, cronLimiter } from "./middleware/rate-limit.js";
+import { timingMiddleware } from "./middleware/timing.js";
 import { getClientIp } from "./lib/client-ip.js";
 import healthRouter from "./routes/health.js";
 import authRouter from "./routes/auth.js";
@@ -30,6 +31,9 @@ app.use("/api/parts/ocr", express.json({ limit: "12mb" }));
 app.use("/api/parts/import", express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
+
+// Timing middleware — logs slow requests, sets Server-Timing header
+app.use(timingMiddleware);
 
 // Security middleware
 if (process.env.NODE_ENV === "production") {

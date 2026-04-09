@@ -67,6 +67,7 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
   const fetchPart = useCallback(async () => {
     setLoading(true);
     try {
+      // Fetch part metadata first for fast first paint
       const data = await api<{ part: Part; crossReferences: CrossRef[]; events: TimelineEvent[] }>(`/api/parts/${partId}?eventsLimit=${EVENTS_LIMIT}`);
       setPart(data.part);
       setCrossRefs(data.crossReferences);
@@ -78,6 +79,17 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
       setLoading(false);
     }
   }, [partId, onClose]);
+
+  // Refresh just the part metadata (no full reload)
+  const refreshPart = useCallback(async () => {
+    try {
+      const data = await api<{ part: Part; crossReferences: CrossRef[]; events: TimelineEvent[] }>(`/api/parts/${partId}?eventsLimit=${EVENTS_LIMIT}`);
+      setPart(data.part);
+      setCrossRefs(data.crossReferences);
+      setEvents(data.events);
+      setHasMoreEvents(data.events.length >= EVENTS_LIMIT);
+    } catch { /* ignore refresh errors */ }
+  }, [partId]);
 
   useEffect(() => { fetchPart(); }, [fetchPart]);
 
@@ -98,8 +110,11 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     setSaving(true);
     try {
       await api(`/api/parts/${part.id}`, { method: "PATCH", body: JSON.stringify({ brand: editBrand || null, description: editDescription || null }) });
+      // Optimistic local update
+      setPart({ ...part, brand: editBrand || null, description: editDescription || null });
       setEditing(false);
-      fetchPart();
+      // Background refresh for server state + parent list
+      refreshPart();
       onPartChanged();
     } finally {
       setSaving(false);
@@ -111,9 +126,13 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     setDepleting(true);
     try {
       await api(`/api/parts/${part.id}/deplete`, { method: "POST", body: JSON.stringify({ quantity: depleteQty, reason: depleteAction }) });
+      // Optimistic local update
+      const newQty = part.quantity - depleteQty;
+      setPart({ ...part, quantity: newQty, available: newQty - part.listedQuantity });
       setDepleteAction(null);
       setDepleteQty(1);
-      fetchPart();
+      // Background refresh for events + parent list
+      refreshPart();
       onPartChanged();
     } catch (err: any) {
       alert(err.message || "Failed to deplete");
@@ -140,15 +159,18 @@ export function PartDetail({ partId, onClose, onPartChanged }: PartDetailProps) 
     if (!part) return;
     setListingSaving(true);
     try {
+      const newListingId = listingId.trim() || null;
+      const newListedQty = newListingId ? listingQty : 0;
       await api(`/api/parts/${part.id}`, {
         method: "PATCH",
         body: JSON.stringify({
-          ebayListingId: listingId.trim() || null,
-          listedQuantity: listingId.trim() ? listingQty : 0,
+          ebayListingId: newListingId,
+          listedQuantity: newListedQty,
         }),
       });
+      setPart({ ...part, ebayListingId: newListingId, listedQuantity: newListedQty, available: part.quantity - newListedQty });
       setShowListingForm(false);
-      fetchPart();
+      refreshPart();
       onPartChanged();
     } catch (err: any) {
       alert(err.message || "Failed to update listing");

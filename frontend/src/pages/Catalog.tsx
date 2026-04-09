@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { StatusBadge } from "../components/StatusBadge";
@@ -26,16 +26,27 @@ export function Catalog() {
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
   const [showAddPart, setShowAddPart] = useState(false);
 
+  const abortRef = useRef<AbortController | null>(null);
+
   const fetchParts = useCallback(async () => {
+    // Abort any in-flight search
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     try {
       const params = search ? `?search=${encodeURIComponent(search)}` : "";
       const data = await api<Part[]>(`/api/parts${params}`);
-      setParts(data);
+      if (!controller.signal.aborted) {
+        setParts(data);
+      }
     } catch {
-      // stay on empty state
+      // stay on empty state (includes aborted requests)
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [search]);
 

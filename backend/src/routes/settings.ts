@@ -5,11 +5,12 @@ import { invalidateAuthCache } from "../middleware/auth.js";
 import { settings, ebayProcessedOrders } from "../db/schema.js";
 import { eq, isNotNull, sql } from "drizzle-orm";
 import { validateBody, updateSettingsSchema } from "../middleware/validate.js";
+import { cacheControl } from "../middleware/timing.js";
 
 const router = Router();
 
-// GET /api/settings
-router.get("/", async (req, res) => {
+// GET /api/settings — cached for 30s (private, user-specific)
+router.get("/", cacheControl(30), async (req, res) => {
   try {
     const db = getDb();
     const [row] = await db.select().from(settings).limit(1);
