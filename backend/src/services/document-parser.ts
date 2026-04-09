@@ -2,7 +2,7 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate } from "./template-validate.js";
-import { llmExtract, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
+import { llmExtract, llmExtractTotals, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -94,6 +94,22 @@ export async function parseDocument(
       const extracted = applyTemplate(text, tpl.extractionRules);
 
       if (extracted.items.length > 0) {
+        // If template has no totals or regex extracted 0, do a cheap LLM totals call
+        const hasTotals = extracted.items.some((i) => (i.shipCost ?? 0) > 0 || (i.taxPrice ?? 0) > 0);
+        if (!hasTotals && isLlmConfigured()) {
+          onStep("extracting_totals", "Fetching tax/shipping totals...");
+          try {
+            const totals = await llmExtractTotals(text, abortSignal);
+            const tax = totals.totalTax ?? 0;
+            const shipping = totals.totalShipping ?? 0;
+            if ((tax > 0 || shipping > 0) && extracted.items.length > 0) {
+              distributeAndNormalize(extracted.items, shipping, tax);
+            }
+          } catch {
+            // Non-critical -- items still extracted
+          }
+        }
+
         incrementSuccess(tpl.id).catch(() => {});
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
@@ -176,6 +192,13 @@ async function llmPath(
     const validation = validateTemplate(text, templateRules, extraction);
 
     if (validation.valid) {
+      // Strip totals rules that failed verification before saving
+      if (validation.badTotals && validation.badTotals.length > 0) {
+        templateRules.totals = templateRules.totals.filter(
+          (t) => !validation.badTotals!.includes(t.name)
+        );
+        console.warn("Stripped bad totals rules:", validation.badTotals);
+      }
       await upsertTemplate(templateRules, existingTemplateId);
       onStep(
         "template_stored",

@@ -236,3 +236,52 @@ export async function llmGenerateTemplate(
 
   return JSON.parse(content) as ExtractionRules;
 }
+
+const TOTALS_SCHEMA = {
+  name: "invoice_totals",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      totalTax: { type: ["number", "null"] },
+      totalShipping: { type: ["number", "null"] },
+    },
+    required: ["totalTax", "totalShipping"],
+    additionalProperties: false,
+  },
+};
+
+/**
+ * Cheap nano call to extract just tax and shipping totals.
+ * Used when a saved template extracts items but has no working totals regex.
+ * Sends only the last ~1500 chars (summary/totals area) to minimize tokens.
+ */
+export async function llmExtractTotals(
+  text: string,
+  abortSignal?: AbortSignal
+): Promise<{ totalTax: number | null; totalShipping: number | null }> {
+  const client = getClient();
+  // Totals are almost always near the end of the document
+  const snippet = text.length > 1500 ? text.slice(-1500) : text;
+
+  const response = await client.chat.completions.create(
+    {
+      model: "gpt-5.4-nano",
+      temperature: 0,
+      messages: [
+        { role: "system", content: "Extract the total tax amount and total shipping/delivery amount from this invoice text. Return null if not found." },
+        { role: "user", content: snippet },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: TOTALS_SCHEMA as any,
+      },
+    },
+    { signal: abortSignal }
+  );
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) return { totalTax: null, totalShipping: null };
+
+  return JSON.parse(content);
+}

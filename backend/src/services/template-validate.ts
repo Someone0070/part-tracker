@@ -1,12 +1,13 @@
 import RE2 from "re2";
 import type { ExtractionRules } from "./template-types.js";
 import { applyTemplate, safeMatch } from "./template-apply.js";
-
 import type { LlmExtraction } from "./template-llm.js";
 
-interface ValidationResult {
+export interface ValidationResult {
   valid: boolean;
   reason?: string;
+  /** Totals rule names that failed validation (strip before saving) */
+  badTotals?: string[];
 }
 
 function collectLiterals(extraction: LlmExtraction): string[] {
@@ -119,31 +120,24 @@ function validateExtraction(
     }
   }
 
-  // Validate totals regex against LLM-extracted totals
+  // Check totals regex -- bad ones get flagged for stripping, not rejection
+  const badTotals: string[] = [];
   const subtotal = extraction.items.reduce(
     (sum, item) => sum + (item.unitPrice ?? 0) * item.quantity, 0
   );
   for (const totalRule of rules.totals) {
     const m = safeMatch(text, totalRule.regex, "s");
     const regexVal = m?.[1] ? parseFloat(m[1]) : 0;
-    if (regexVal > subtotal) {
-      return {
-        valid: false,
-        reason: `Totals regex "${totalRule.name}" extracted ${regexVal} which exceeds subtotal ${subtotal}`,
-      };
-    }
     const llmVal = totalRule.name === "tax" ? (extraction.totalTax ?? 0)
       : totalRule.name === "shipping" ? (extraction.totalShipping ?? 0)
       : 0;
-    if (llmVal > 0 && Math.abs(regexVal - llmVal) > 1) {
-      return {
-        valid: false,
-        reason: `Totals mismatch for "${totalRule.name}": regex=${regexVal}, llm=${llmVal}`,
-      };
+
+    if (regexVal > subtotal || (llmVal > 0 && Math.abs(regexVal - llmVal) > 1)) {
+      badTotals.push(totalRule.name);
     }
   }
 
-  return { valid: true };
+  return { valid: true, badTotals: badTotals.length > 0 ? badTotals : undefined };
 }
 
 export function validateTemplate(
