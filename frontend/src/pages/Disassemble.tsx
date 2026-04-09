@@ -46,10 +46,7 @@ export function Disassemble() {
     setLoading(true);
     api<Appliance[]>("/api/appliances")
       .then((data) => {
-        const sorted = [...data].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        setAppliances(sorted);
+        setAppliances(data);
       })
       .catch((err: any) => setError(err.message || "Failed to load appliances"))
       .finally(() => setLoading(false));

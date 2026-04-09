@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useEffect } from "react";
+import { SettingsProvider } from "./hooks/useSettings";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
-import { api } from "./api/client";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Catalog } from "./pages/Catalog";
@@ -13,13 +12,6 @@ import { ImportDocument } from "./pages/ImportDocument";
 
 function AppRoutes() {
   const { isAuthenticated, isLoading } = useAuth();
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    api<{ darkMode: boolean }>("/api/settings").then((data) => {
-      document.documentElement.classList.toggle("dark", data.darkMode);
-    }).catch(() => {});
-  }, [isAuthenticated]);
 
   if (isLoading) {
     return (
@@ -50,9 +42,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <SettingsProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </SettingsProvider>
     </BrowserRouter>
   );
 }

@@ -1,6 +1,9 @@
 let accessToken: string | null = null;
 let refreshPromise: Promise<string | null> | null = null;
 
+// In-flight GET dedupe: concurrent identical GETs share one request
+const inflightGets = new Map<string, Promise<unknown>>();
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
@@ -37,6 +40,28 @@ function getRefreshedToken(): Promise<string | null> {
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {}
+): Promise<T> {
+  const method = (options.method ?? "GET").toUpperCase();
+
+  // Dedupe concurrent identical GET requests
+  if (method === "GET") {
+    const key = path;
+    const inflight = inflightGets.get(key);
+    if (inflight) return inflight as Promise<T>;
+
+    const promise = apiInternal<T>(path, options).finally(() => {
+      inflightGets.delete(key);
+    });
+    inflightGets.set(key, promise);
+    return promise;
+  }
+
+  return apiInternal<T>(path, options);
+}
+
+async function apiInternal<T>(
+  path: string,
+  options: RequestInit
 ): Promise<T> {
   const headers = new Headers(options.headers);
   if (accessToken) {

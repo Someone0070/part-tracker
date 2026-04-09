@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, setAccessToken } from "../api/client";
+import { useSettings, type AppSettings } from "./useSettings";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
@@ -24,6 +25,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const { setSettings } = useSettings();
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +35,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (res.ok) {
           const data = await res.json();
           setAccessToken(data.accessToken);
+          if (data.settings) {
+            setSettings(data.settings as AppSettings);
+          }
           if (!cancelled) setIsAuthenticated(true);
         }
       } catch {
@@ -45,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [setSettings]);
 
   const login = useCallback(async (password: string) => {
     const data = await api<{ accessToken: string }>("/api/auth/verify", {

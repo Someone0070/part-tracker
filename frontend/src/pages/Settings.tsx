@@ -1,25 +1,11 @@
 import { useState, useEffect, type FormEvent, type ReactNode } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
+import { useSettings, type AppSettings } from "../hooks/useSettings";
 import { Toggle } from "../components/Toggle";
 import { Icon } from "../components/Icon";
 import { Modal } from "../components/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-
-interface AppSettings {
-  crossRefEnabled: boolean;
-  darkMode: boolean;
-  ebay: {
-    enabled: boolean;
-    connected: boolean;
-    quarantinedCount: number;
-  };
-  apiKey: {
-    exists: boolean;
-    prefix: string | null;
-    scopes: string[];
-  };
-}
 
 const ALL_SCOPES = [
   { value: "parts:read", label: "Parts - Read" },
@@ -30,37 +16,25 @@ const ALL_SCOPES = [
 
 export function Settings() {
   const { logout, changePassword } = useAuth();
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { settings, setSettings, refresh } = useSettings();
+  const [loading, setLoading] = useState(!settings);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
+  // If settings weren't hydrated from bootstrap (e.g. login flow), fetch them
   useEffect(() => {
-    fetchSettings();
-  }, []);
-
-  async function fetchSettings(showLoading = true) {
-    if (showLoading) setLoading(true);
-    try {
-      const data = await api<AppSettings>("/api/settings");
-      setSettings(data);
-      document.documentElement.classList.toggle("dark", data.darkMode);
-    } catch {
-      // stay on loading state
-    } finally {
-      setLoading(false);
-    }
-  }
+    if (settings) return;
+    refresh().finally(() => setLoading(false));
+  }, [settings, refresh]);
 
   async function updateSetting(key: string, value: boolean) {
     if (!settings) return;
 
-    // Optimistic update
     const prev = { ...settings };
     if (key === "ebayEnabled") {
       setSettings({ ...settings, ebay: { ...settings.ebay, enabled: value } });
     } else {
-      setSettings({ ...settings, [key]: value });
+      setSettings({ ...settings, [key]: value } as AppSettings);
     }
 
     try {
@@ -73,15 +47,10 @@ export function Settings() {
         method: "PUT",
         body: JSON.stringify(body),
       });
-
-      if (key === "darkMode") {
-        document.documentElement.classList.toggle("dark", value);
-      }
     } catch {
       setSettings(prev);
     }
   }
-
 
   if (loading || !settings) {
     return (
@@ -116,10 +85,10 @@ export function Settings() {
         </section>
 
         {/* eBay */}
-        <EbaySection settings={settings} onRefresh={() => fetchSettings(false)} onUpdateSetting={updateSetting} />
+        <EbaySection settings={settings} onRefresh={refresh} onUpdateSetting={updateSetting} />
 
         {/* API Key */}
-        <ApiKeySection settings={settings} onRefresh={() => fetchSettings(false)} />
+        <ApiKeySection settings={settings} onRefresh={refresh} />
 
         {/* Account */}
         <section>
@@ -174,7 +143,7 @@ export function Settings() {
   );
 }
 
-function EbaySection({ settings, onRefresh, onUpdateSetting }: { settings: AppSettings; onRefresh: () => void; onUpdateSetting: (key: string, value: boolean) => void }) {
+function EbaySection({ settings, onRefresh, onUpdateSetting }: { settings: AppSettings; onRefresh: () => Promise<unknown>; onUpdateSetting: (key: string, value: boolean) => void }) {
   const [connecting, setConnecting] = useState(false);
   const [showDisconnect, setShowDisconnect] = useState(false);
 
@@ -258,7 +227,7 @@ function EbaySection({ settings, onRefresh, onUpdateSetting }: { settings: AppSe
   );
 }
 
-function ApiKeySection({ settings, onRefresh }: { settings: AppSettings; onRefresh: () => void }) {
+function ApiKeySection({ settings, onRefresh }: { settings: AppSettings; onRefresh: () => Promise<unknown> }) {
   const [showKey, setShowKey] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<string[]>(
     settings.apiKey.scopes.length > 0 ? settings.apiKey.scopes : ALL_SCOPES.map((s) => s.value)

@@ -4,8 +4,8 @@ import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import { getDb } from "../db/index.js";
 import { invalidateAuthCache } from "../middleware/auth.js";
-import { settings, sessions } from "../db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { settings, sessions, ebayProcessedOrders } from "../db/schema.js";
+import { eq, sql, isNotNull } from "drizzle-orm";
 import { validateBody, loginSchema, changePasswordSchema } from "../middleware/validate.js";
 import { loginLimiter, refreshLimiter } from "../middleware/rate-limit.js";
 
@@ -81,14 +81,40 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
       return;
     }
 
-    const [settingsRow] = await db.select({ passwordVersion: settings.passwordVersion }).from(settings).limit(1);
+    const [settingsRow] = await db.select().from(settings).limit(1);
     if (!settingsRow) {
       res.status(500).json({ error: "Settings not initialized" });
       return;
     }
 
+    const [quarantine] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(ebayProcessedOrders)
+      .where(isNotNull(ebayProcessedOrders.quarantineReason));
+
+    let scopes: string[] = [];
+    try {
+      scopes = settingsRow.apiKeyScopes ? JSON.parse(settingsRow.apiKeyScopes) : [];
+    } catch { /* empty */ }
+
     const accessToken = generateAccessToken(settingsRow.passwordVersion);
-    res.json({ accessToken });
+    res.json({
+      accessToken,
+      settings: {
+        crossRefEnabled: settingsRow.crossRefEnabled,
+        darkMode: settingsRow.darkMode,
+        ebay: {
+          enabled: settingsRow.ebayEnabled,
+          connected: !!settingsRow.ebayRefreshToken,
+          quarantinedCount: Number(quarantine.count),
+        },
+        apiKey: {
+          exists: !!settingsRow.apiKeyHash,
+          prefix: settingsRow.apiKeyPrefix || null,
+          scopes,
+        },
+      },
+    });
   } catch (err) {
     console.error("Refresh error:", err);
     res.status(500).json({ error: "Internal error" });
