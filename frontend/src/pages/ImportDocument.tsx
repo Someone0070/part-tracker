@@ -1,5 +1,5 @@
 import { useState, useRef, type ChangeEvent, type DragEvent } from "react";
-import { api } from "../api/client";
+import { getAccessToken, refreshAccessToken } from "../api/client";
 import { Icon } from "../components/Icon";
 
 function fileToBase64(file: File): Promise<string> {
@@ -30,6 +30,13 @@ interface ParseResult {
   deliveryCourier: string | null;
   items: ExtractedItem[];
   rawText: string;
+  steps: Array<{ step: string; message: string }>;
+}
+
+interface StepEntry {
+  step: string;
+  message: string;
+  status: "active" | "done";
 }
 
 function fmt(v: number | null): string {
@@ -48,6 +55,7 @@ function Row({ label, value }: { label: string; value: string | null | undefined
 
 export function ImportDocument() {
   const [result, setResult] = useState<ParseResult | null>(null);
+  const [steps, setSteps] = useState<StepEntry[]>([]);
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -58,13 +66,75 @@ export function ImportDocument() {
     setError("");
     setParsing(true);
     setResult(null);
+    setSteps([]);
+
     try {
       const base64 = await fileToBase64(file);
-      const data = await api<ParseResult>("/api/parts/import", {
-        method: "POST",
-        body: JSON.stringify({ document: base64 }),
-      });
-      setResult(data);
+      const body = JSON.stringify({ document: base64 });
+
+      async function doRequest(token: string): Promise<Response> {
+        return fetch("/api/parts/import", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body,
+        });
+      }
+
+      let token = getAccessToken();
+      if (!token) throw new Error("Not authenticated");
+
+      let response = await doRequest(token);
+
+      if (response.status === 401) {
+        const newToken = await refreshAccessToken();
+        if (!newToken) throw new Error("Session expired");
+        response = await doRequest(newToken);
+      }
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Import failed" }));
+        throw new Error(err.error || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop()!;
+
+        for (const chunk of chunks) {
+          if (!chunk.trim()) continue;
+          const typeMatch = chunk.match(/^event:\s*(\w+)/m);
+          const dataMatch = chunk.match(/^data:\s*(.+)$/m);
+          if (!typeMatch || !dataMatch) continue;
+
+          const eventType = typeMatch[1];
+          const data = JSON.parse(dataMatch[1]);
+
+          if (eventType === "step") {
+            setSteps((prev) => {
+              const updated = prev.map((s) =>
+                s.status === "active" ? { ...s, status: "done" as const } : s
+              );
+              return [...updated, { step: data.step, message: data.message, status: "active" as const }];
+            });
+          } else if (eventType === "result") {
+            setSteps((prev) => prev.map((s) => ({ ...s, status: "done" as const })));
+            setResult(data as ParseResult);
+          } else if (eventType === "error") {
+            throw new Error(data.error);
+          }
+        }
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to parse document");
     } finally {
@@ -104,8 +174,11 @@ export function ImportDocument() {
 
   function reset() {
     setResult(null);
+    setSteps([]);
     setError("");
   }
+
+  const showUpload = !result && !parsing && steps.length === 0;
 
   return (
     <div className="pt-4">
@@ -119,39 +192,45 @@ export function ImportDocument() {
         </div>
       )}
 
-      {!result && (
-        <>
-          {parsing ? (
-            <div className="flex items-center justify-center gap-2 px-4 py-10 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
-              <Icon name="hourglass_top" size={18} className="animate-spin" />
-              Parsing document...
+      {steps.length > 0 && (
+        <div className="mb-4 space-y-1">
+          {steps.map((s, i) => (
+            <div key={i} className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+              {s.status === "active" ? (
+                <Icon name="hourglass_top" size={14} className="animate-spin text-gray-400" />
+              ) : (
+                <Icon name="check_circle" size={14} className="text-green-500" />
+              )}
+              <span>{s.message}</span>
             </div>
-          ) : (
-            <label
-              onDragEnter={onDragEnter}
-              onDragOver={onDragOver}
-              onDragLeave={onDragLeave}
-              onDrop={onDrop}
-              className={`flex flex-col items-center justify-center gap-2 px-4 py-10 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
-                dragging
-                  ? "border-gray-900 dark:border-gray-100 bg-gray-50 dark:bg-gray-800"
-                  : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
-              }`}
-            >
-              <Icon name="upload_file" size={32} className="text-gray-400 dark:text-gray-500" />
-              <span className="text-sm text-gray-600 dark:text-gray-300">
-                Select a PDF document
-              </span>
-              <input
-                ref={inputRef}
-                type="file"
-                accept=".pdf,application/pdf"
-                className="sr-only"
-                onChange={handleFile}
-              />
-            </label>
-          )}
-        </>
+          ))}
+        </div>
+      )}
+
+      {showUpload && (
+        <label
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          className={`flex flex-col items-center justify-center gap-2 px-4 py-10 rounded-lg border-2 border-dashed cursor-pointer transition-colors ${
+            dragging
+              ? "border-gray-900 dark:border-gray-100 bg-gray-50 dark:bg-gray-800"
+              : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+          }`}
+        >
+          <Icon name="upload_file" size={32} className="text-gray-400 dark:text-gray-500" />
+          <span className="text-sm text-gray-600 dark:text-gray-300">
+            Select a PDF document
+          </span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".pdf,application/pdf"
+            className="sr-only"
+            onChange={handleFile}
+          />
+        </label>
       )}
 
       {result && (
