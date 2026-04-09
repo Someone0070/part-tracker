@@ -40,14 +40,14 @@ function collectLiterals(extraction: LlmExtraction): string[] {
 
 function collectPatterns(rules: ExtractionRules): string[] {
   const patterns: string[] = [];
-  for (const rule of Object.values(rules.fields)) {
+  for (const rule of rules.fields) {
     patterns.push(rule.regex);
   }
   patterns.push(rules.lineItems.start);
   patterns.push(rules.lineItems.end);
   patterns.push(rules.lineItems.row);
-  for (const pattern of Object.values(rules.totals)) {
-    patterns.push(pattern);
+  for (const total of rules.totals) {
+    patterns.push(total.regex);
   }
   return patterns;
 }

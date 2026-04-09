@@ -34,7 +34,9 @@ CRITICAL rules for the template:
 - lineItems.start should match the TABLE HEADER row (column labels)
 - lineItems.end should match text AFTER the last item row (subtotal, total, payment terms, etc.)
 - Do NOT match payment lines, subtotal lines, or footer text with the row pattern
-- For vendor signals, extract the company domain and a unique identifying phrase`;
+- For vendor signals, extract the company domain and a unique identifying phrase
+- fields is an array of {name, regex, group} objects. Use names like "orderNumber", "orderDate", "technicianName", "trackingNumber", "courier"
+- totals is an array of {name, regex} objects. Use names "tax" and "shipping" for the total extraction patterns`;
 
 const RESPONSE_SCHEMA = {
   name: "invoice_extraction",
@@ -84,14 +86,15 @@ const RESPONSE_SCHEMA = {
             additionalProperties: false,
           },
           fields: {
-            type: "object",
-            additionalProperties: {
+            type: "array",
+            items: {
               type: "object",
               properties: {
+                name: { type: "string" },
                 regex: { type: "string" },
                 group: { type: "number" },
               },
-              required: ["regex", "group"],
+              required: ["name", "regex", "group"],
               additionalProperties: false,
             },
           },
@@ -106,8 +109,16 @@ const RESPONSE_SCHEMA = {
             additionalProperties: false,
           },
           totals: {
-            type: "object",
-            additionalProperties: { type: "string" },
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                regex: { type: "string" },
+              },
+              required: ["name", "regex"],
+              additionalProperties: false,
+            },
           },
         },
         required: ["vendorName", "vendorSignals", "fields", "lineItems", "totals"],

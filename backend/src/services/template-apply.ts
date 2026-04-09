@@ -50,9 +50,9 @@ export function applyTemplate(
 ): DocumentResult {
   // 1. Extract scalar fields
   const fields: Record<string, string | null> = {};
-  for (const [name, rule] of Object.entries(rules.fields)) {
+  for (const rule of rules.fields) {
     const m = safeMatch(text, rule.regex, "s");
-    fields[name] = m?.[rule.group] ?? null;
+    fields[rule.name] = m?.[rule.group] ?? null;
   }
 
   // 2. Extract line items between start/end markers
@@ -90,8 +90,10 @@ export function applyTemplate(
   }
 
   // 3. Extract totals and distribute proportionally
-  const tax = extractTotal(text, rules.totals["tax"]);
-  const shipping = extractTotal(text, rules.totals["shipping"]);
+  const taxRule = rules.totals.find((t) => t.name === "tax");
+  const shipRule = rules.totals.find((t) => t.name === "shipping");
+  const tax = extractTotal(text, taxRule?.regex);
+  const shipping = extractTotal(text, shipRule?.regex);
 
   if (tax > 0 || shipping > 0) {
     distributeAndNormalize(items, shipping, tax);

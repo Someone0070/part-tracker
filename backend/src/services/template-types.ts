@@ -20,8 +20,14 @@ export interface DocumentResult {
 }
 
 export interface FieldRule {
+  name: string;
   regex: string;
   group: number;
+}
+
+export interface TotalRule {
+  name: string;
+  regex: string;
 }
 
 export interface ExtractionRules {
@@ -30,13 +36,13 @@ export interface ExtractionRules {
     domains: string[];
     keywords: string[];
   };
-  fields: Record<string, FieldRule>;
+  fields: FieldRule[];
   lineItems: {
     start: string;
     end: string;
     row: string;
   };
-  totals: Record<string, string>;
+  totals: TotalRule[];
 }
 
 export interface VendorTemplate {

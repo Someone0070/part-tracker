@@ -154,12 +154,10 @@ async function llmPath(
   let shipping = 0;
   const templateRules = llmResult.template;
   try {
-    const taxMatch = templateRules.totals["tax"]
-      ? safeMatch(text, templateRules.totals["tax"], "s")
-      : null;
-    const shipMatch = templateRules.totals["shipping"]
-      ? safeMatch(text, templateRules.totals["shipping"], "s")
-      : null;
+    const taxRule = templateRules.totals.find((t) => t.name === "tax");
+    const shipRule = templateRules.totals.find((t) => t.name === "shipping");
+    const taxMatch = taxRule ? safeMatch(text, taxRule.regex, "s") : null;
+    const shipMatch = shipRule ? safeMatch(text, shipRule.regex, "s") : null;
     tax = taxMatch?.[1] ? parseFloat(taxMatch[1]) : 0;
     shipping = shipMatch?.[1] ? parseFloat(shipMatch[1]) : 0;
   } catch {
