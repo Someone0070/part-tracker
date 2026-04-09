@@ -1,6 +1,7 @@
 import { useState, useRef, type ChangeEvent, type DragEvent } from "react";
 import { api } from "../api/client";
 import { Icon } from "../components/Icon";
+import { UrlImportForm } from "../components/UrlImportForm";
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -51,6 +52,7 @@ export function ImportDocument() {
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [tab, setTab] = useState<"pdf" | "url">("pdf");
   const dragCounter = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -113,13 +115,38 @@ export function ImportDocument() {
         Import Document
       </h1>
 
+      <div className="flex gap-1 mb-4 p-0.5 rounded-lg bg-gray-100 dark:bg-gray-800">
+        <button
+          type="button"
+          onClick={() => { setTab("pdf"); reset(); }}
+          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            tab === "pdf"
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+              : "text-gray-500 dark:text-gray-400"
+          }`}
+        >
+          PDF Upload
+        </button>
+        <button
+          type="button"
+          onClick={() => { setTab("url"); reset(); }}
+          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            tab === "url"
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+              : "text-gray-500 dark:text-gray-400"
+          }`}
+        >
+          URL Import
+        </button>
+      </div>
+
       {error && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
 
-      {!result && (
+      {tab === "pdf" && !result && (
         <>
           {parsing ? (
             <div className="flex items-center justify-center gap-2 px-4 py-10 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
@@ -152,6 +179,14 @@ export function ImportDocument() {
             </label>
           )}
         </>
+      )}
+
+      {tab === "url" && !result && (
+        <UrlImportForm
+          onResult={setResult}
+          onError={setError}
+          onReset={reset}
+        />
       )}
 
       {result && (
