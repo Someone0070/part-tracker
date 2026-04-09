@@ -1,9 +1,8 @@
 import { PDFParse } from "pdf-parse";
-import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
+import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
-import { validateTemplate } from "./template-validate.js";
+import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
 import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured } from "./template-llm.js";
-import { findFieldFailures } from "./template-validate.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -216,58 +215,64 @@ async function llmPath(
   try {
     const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal);
 
-    onStep("validating_template", "Validating generated template...");
-    const validation = validateTemplate(text, templateRules, extraction);
+    // Validate + repair loop: try up to 2 rounds
+    let saved = false;
+    for (let attempt = 0; attempt < 2 && !saved; attempt++) {
+      onStep("validating_template", attempt === 0 ? "Validating generated template..." : "Re-validating after repair...");
+      const validation = validateTemplate(text, templateRules, extraction);
 
-    if (!validation.valid) {
-      console.warn("Template validation failed:", validation.reason);
-      onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
-    } else {
-      // Find and repair broken field/total regex patterns
-      const failures = findFieldFailures(text, templateRules, extraction);
+      if (validation.valid) {
+        // Check field/total patterns
+        const failures = findFieldFailures(text, templateRules, extraction);
+        if (failures.length > 0) {
+          onStep("repairing_template", `Repairing ${failures.length} pattern${failures.length > 1 ? "s" : ""}...`);
+          await applyRepairs(text, templateRules, failures, abortSignal);
+        }
 
-      if (failures.length > 0) {
-        onStep("repairing_template", `Repairing ${failures.length} regex pattern${failures.length > 1 ? "s" : ""}...`);
-        try {
-          const repairs = await llmRepairRegex(failures, abortSignal);
+        // Strip bad totals
+        const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
+        templateRules.totals = templateRules.totals.filter((t) => {
+          const m = safeMatch(text, t.regex, "s");
+          const val = m?.[1] ? parseFloat(m[1]) : 0;
+          const llmVal = t.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
+          return !(val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1));
+        });
+
+        await upsertTemplate(templateRules, existingTemplateId);
+        onStep("template_stored", "Template learned and stored. Future invoices from this vendor will be instant.");
+        saved = true;
+      } else if (attempt === 0) {
+        // First failure -- attempt repair of whatever broke (including row regex)
+        console.warn("Template validation failed:", validation.reason);
+        onStep("repairing_template", "Template failed validation. Attempting repair...");
+
+        // Build repair context for the specific failure
+        const itemFailure = validation.reason?.includes("items");
+        if (itemFailure && extraction.items.length > 0) {
+          // Row regex doesn't work -- send example item line for repair
+          const firstItem = extraction.items[0];
+          const itemContext = text.split("\n").find((line) =>
+            line.includes(firstItem.partNumber) || (firstItem.partName && line.includes(firstItem.partName.split(" ")[0]))
+          ) ?? "";
+          const repairs = await llmRepairRegex([{
+            name: "row",
+            type: "field" as const,
+            expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
+            got: "(0 items matched)",
+            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nExample item line from text:\n${itemContext}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
+          }], abortSignal);
+
           for (const repair of repairs) {
-            // Verify the repaired regex actually works before applying
-            const m = safeMatch(text, repair.regex, "s");
-            if (!m?.[repair.group]) continue;
-
-            if (repair.type === "field") {
-              const existing = templateRules.fields.findIndex((f) => f.name === repair.name);
-              const rule = { name: repair.name, regex: repair.regex, group: repair.group };
-              if (existing >= 0) templateRules.fields[existing] = rule;
-              else templateRules.fields.push(rule);
-            } else if (repair.type === "total") {
-              const existing = templateRules.totals.findIndex((t) => t.name === repair.name);
-              const rule = { name: repair.name, regex: repair.regex };
-              if (existing >= 0) templateRules.totals[existing] = rule;
-              else templateRules.totals.push(rule);
+            if (repair.name === "row") {
+              templateRules.lineItems.row = repair.regex;
             }
           }
-        } catch {
-          console.warn("Template repair failed, saving with working patterns only");
         }
+        // Loop will re-validate on next iteration
+      } else {
+        console.warn("Template repair failed after retry:", validation.reason);
+        onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
       }
-
-      // Final pass: strip any totals that still don't work
-      const badTotals = validation.badTotals ?? [];
-      const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
-      for (const totalRule of templateRules.totals) {
-        if (badTotals.includes(totalRule.name)) {
-          const m = safeMatch(text, totalRule.regex, "s");
-          const val = m?.[1] ? parseFloat(m[1]) : 0;
-          const llmVal = totalRule.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
-          if (val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1)) {
-            templateRules.totals = templateRules.totals.filter((t) => t.name !== totalRule.name);
-          }
-        }
-      }
-
-      await upsertTemplate(templateRules, existingTemplateId);
-      onStep("template_stored", "Template learned and stored. Future invoices from this vendor will be instant.");
     }
   } catch (err) {
     console.warn("Template generation failed:", err);
@@ -276,6 +281,35 @@ async function llmPath(
 
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
+}
+
+async function applyRepairs(
+  text: string,
+  rules: ExtractionRules,
+  failures: FieldFailure[],
+  abortSignal?: AbortSignal
+): Promise<void> {
+  try {
+    const repairs = await llmRepairRegex(failures, abortSignal);
+    for (const repair of repairs) {
+      const m = safeMatch(text, repair.regex, "s");
+      if (!m?.[repair.group]) continue;
+
+      if (repair.type === "field") {
+        const idx = rules.fields.findIndex((f) => f.name === repair.name);
+        const rule = { name: repair.name, regex: repair.regex, group: repair.group };
+        if (idx >= 0) rules.fields[idx] = rule;
+        else rules.fields.push(rule);
+      } else if (repair.type === "total") {
+        const idx = rules.totals.findIndex((t) => t.name === repair.name);
+        const rule = { name: repair.name, regex: repair.regex };
+        if (idx >= 0) rules.totals[idx] = rule;
+        else rules.totals.push(rule);
+      }
+    }
+  } catch {
+    console.warn("Template repair failed");
+  }
 }
 
 /**
