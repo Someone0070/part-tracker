@@ -2,7 +2,8 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, isLlmConfigured } from "./template-llm.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured } from "./template-llm.js";
+import { findFieldFailures } from "./template-validate.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -200,25 +201,55 @@ async function llmPath(
     onStep("validating_template", "Validating generated template...");
     const validation = validateTemplate(text, templateRules, extraction);
 
-    if (validation.valid) {
-      // Strip totals rules that failed verification before saving
-      if (validation.badTotals && validation.badTotals.length > 0) {
-        templateRules.totals = templateRules.totals.filter(
-          (t) => !validation.badTotals!.includes(t.name)
-        );
-        console.warn("Stripped bad totals rules:", validation.badTotals);
-      }
-      await upsertTemplate(templateRules, existingTemplateId);
-      onStep(
-        "template_stored",
-        "Template learned and stored. Future invoices from this vendor will be instant."
-      );
-    } else {
+    if (!validation.valid) {
       console.warn("Template validation failed:", validation.reason);
-      onStep(
-        "template_validation_failed",
-        `Template validation failed: ${validation.reason}`
-      );
+      onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
+    } else {
+      // Find and repair broken field/total regex patterns
+      const failures = findFieldFailures(text, templateRules, extraction);
+
+      if (failures.length > 0) {
+        onStep("repairing_template", `Repairing ${failures.length} regex pattern${failures.length > 1 ? "s" : ""}...`);
+        try {
+          const repairs = await llmRepairRegex(failures, abortSignal);
+          for (const repair of repairs) {
+            // Verify the repaired regex actually works before applying
+            const m = safeMatch(text, repair.regex, "s");
+            if (!m?.[repair.group]) continue;
+
+            if (repair.type === "field") {
+              const existing = templateRules.fields.findIndex((f) => f.name === repair.name);
+              const rule = { name: repair.name, regex: repair.regex, group: repair.group };
+              if (existing >= 0) templateRules.fields[existing] = rule;
+              else templateRules.fields.push(rule);
+            } else if (repair.type === "total") {
+              const existing = templateRules.totals.findIndex((t) => t.name === repair.name);
+              const rule = { name: repair.name, regex: repair.regex };
+              if (existing >= 0) templateRules.totals[existing] = rule;
+              else templateRules.totals.push(rule);
+            }
+          }
+        } catch {
+          console.warn("Template repair failed, saving with working patterns only");
+        }
+      }
+
+      // Final pass: strip any totals that still don't work
+      const badTotals = validation.badTotals ?? [];
+      const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
+      for (const totalRule of templateRules.totals) {
+        if (badTotals.includes(totalRule.name)) {
+          const m = safeMatch(text, totalRule.regex, "s");
+          const val = m?.[1] ? parseFloat(m[1]) : 0;
+          const llmVal = totalRule.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
+          if (val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1)) {
+            templateRules.totals = templateRules.totals.filter((t) => t.name !== totalRule.name);
+          }
+        }
+      }
+
+      await upsertTemplate(templateRules, existingTemplateId);
+      onStep("template_stored", "Template learned and stored. Future invoices from this vendor will be instant.");
     }
   } catch (err) {
     console.warn("Template generation failed:", err);

@@ -237,6 +237,78 @@ export async function llmGenerateTemplate(
   return JSON.parse(content) as ExtractionRules;
 }
 
+const REPAIR_SCHEMA = {
+  name: "regex_repairs",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      repairs: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            type: { type: "string" },
+            regex: { type: "string" },
+            group: { type: "number" },
+          },
+          required: ["name", "type", "regex", "group"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["repairs"],
+    additionalProperties: false,
+  },
+};
+
+interface FieldFailureInput {
+  name: string;
+  type: "field" | "total";
+  expected: string;
+  got: string;
+  context: string;
+}
+
+/**
+ * Ask mini to fix specific regex patterns that failed validation.
+ * Sends the failure details + surrounding text context so it can
+ * see exactly what the text looks like and craft a working pattern.
+ */
+export async function llmRepairRegex(
+  failures: FieldFailureInput[],
+  abortSignal?: AbortSignal
+): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
+  const client = getClient();
+
+  const failureDesc = failures.map((f) =>
+    `- ${f.type} "${f.name}": expected "${f.expected}", got "${f.got}"\n  Text around value: ${JSON.stringify(f.context)}`
+  ).join("\n");
+
+  const response = await client.chat.completions.create(
+    {
+      model: "gpt-5.4-mini",
+      temperature: 0,
+      messages: [
+        { role: "system", content: `You fix regex patterns that failed to extract values from invoice text. You are given the expected value, what the regex actually matched, and the surrounding text. Write RE2-compatible regex (no lookaheads/lookbehinds). For "field" type, use a capture group at the specified group index. For "total" type, capture the number in group 1. Study the exact text carefully — pay attention to tabs (\\t), newlines (\\n), and column structure.` },
+        { role: "user", content: `These regex patterns failed. Fix each one:\n\n${failureDesc}` },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: REPAIR_SCHEMA as any,
+      },
+    },
+    { signal: abortSignal }
+  );
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) return [];
+
+  const parsed = JSON.parse(content) as { repairs: Array<{ name: string; type: string; regex: string; group: number }> };
+  return parsed.repairs;
+}
+
 export interface TemplateFillIn {
   orderNumber: string | null;
   orderDate: string | null;

@@ -10,6 +10,15 @@ export interface ValidationResult {
   badTotals?: string[];
 }
 
+export interface FieldFailure {
+  name: string;
+  type: "field" | "total";
+  expected: string;
+  got: string;
+  /** Text snippet around where the value appears in the document */
+  context: string;
+}
+
 function collectLiterals(extraction: LlmExtraction): string[] {
   const literals: string[] = [];
   if (extraction.orderNumber) literals.push(extraction.orderNumber);
@@ -46,6 +55,15 @@ function literalFraction(pattern: string): number {
   return pattern.length > 0 ? alphanumOnly.length / pattern.length : 0;
 }
 
+/** Get ~200 chars around where a value appears in text */
+function getContext(text: string, value: string): string {
+  const idx = text.indexOf(value);
+  if (idx === -1) return text.slice(0, 200);
+  const start = Math.max(0, idx - 80);
+  const end = Math.min(text.length, idx + value.length + 80);
+  return text.slice(start, end);
+}
+
 function validateStructure(
   rules: ExtractionRules,
   extraction: LlmExtraction
@@ -77,7 +95,6 @@ function validateStructure(
     }
   }
 
-  // Only apply literal heuristic to row regex (field patterns naturally contain label text)
   const rowFrac = literalFraction(rules.lineItems.row);
   if (rowFrac > 0.4) {
     return { valid: false, reason: `Row regex is ${Math.round(rowFrac * 100)}% literal: ${rules.lineItems.row}` };
@@ -149,4 +166,94 @@ export function validateTemplate(
   if (!structural.valid) return structural;
 
   return validateExtraction(text, rules, extraction);
+}
+
+/**
+ * Identify which field/total regexes failed so they can be repaired.
+ * Returns failures with the expected value and surrounding text context.
+ */
+export function findFieldFailures(
+  text: string,
+  rules: ExtractionRules,
+  extraction: LlmExtraction
+): FieldFailure[] {
+  const failures: FieldFailure[] = [];
+
+  const expectedFields: Record<string, string | null> = {
+    orderNumber: extraction.orderNumber,
+    orderDate: extraction.orderDate,
+    technicianName: extraction.technicianName,
+    trackingNumber: extraction.trackingNumber,
+    courier: extraction.deliveryCourier,
+  };
+
+  for (const rule of rules.fields) {
+    const expected = expectedFields[rule.name];
+    if (!expected) continue;
+
+    const m = safeMatch(text, rule.regex, "s");
+    const got = m?.[rule.group] ?? "";
+
+    if (got.trim() !== expected.trim()) {
+      failures.push({
+        name: rule.name,
+        type: "field",
+        expected,
+        got: got || "(no match)",
+        context: getContext(text, expected),
+      });
+    }
+  }
+
+  // Check for fields the LLM found but template has no rule for
+  for (const [name, expected] of Object.entries(expectedFields)) {
+    if (!expected) continue;
+    if (!rules.fields.some((r) => r.name === name)) {
+      failures.push({
+        name,
+        type: "field",
+        expected,
+        got: "(no rule)",
+        context: getContext(text, expected),
+      });
+    }
+  }
+
+  const subtotal = extraction.items.reduce(
+    (sum, item) => sum + (item.unitPrice ?? 0) * item.quantity, 0
+  );
+  const expectedTotals: Record<string, number> = {};
+  if (extraction.totalTax) expectedTotals["tax"] = extraction.totalTax;
+  if (extraction.totalShipping) expectedTotals["shipping"] = extraction.totalShipping;
+
+  for (const [name, expected] of Object.entries(expectedTotals)) {
+    const rule = rules.totals.find((t) => t.name === name);
+    const m = rule ? safeMatch(text, rule.regex, "s") : null;
+    const got = m?.[1] ? parseFloat(m[1]) : 0;
+
+    if (Math.abs(got - expected) > 1 || got > subtotal) {
+      failures.push({
+        name,
+        type: "total",
+        expected: String(expected),
+        got: rule ? String(got) : "(no rule)",
+        context: getContext(text, String(expected)),
+      });
+    }
+  }
+
+  // Check for totals the LLM found but template has no rule for
+  for (const name of Object.keys(expectedTotals)) {
+    if (!rules.totals.some((t) => t.name === name)) {
+      failures.push({
+        name,
+        type: "total",
+        expected: String(expectedTotals[name]),
+        got: "(no rule)",
+        context: getContext(text, String(expectedTotals[name])),
+      });
+    }
+  }
+
+  return failures;
 }
