@@ -96,20 +96,24 @@ export async function parseDocument(
 
       if (extracted.items.length > 0) {
         // Fill in missing fields (totals + metadata) with a cheap nano call
-        const hasTotals = extracted.items.some((i) => (i.shipCost ?? 0) > 0 || (i.taxPrice ?? 0) > 0);
-        const missingMeta = !extracted.orderNumber && !extracted.technicianName && !extracted.trackingNumber;
-        if ((!hasTotals || missingMeta) && isLlmConfigured()) {
+        const hasShip = extracted.items.some((i) => (i.shipCost ?? 0) > 0);
+        const hasTax = extracted.items.some((i) => (i.taxPrice ?? 0) > 0);
+        const missingTotals = !hasShip || !hasTax;
+        const missingMeta = !extracted.orderNumber || !extracted.technicianName || !extracted.trackingNumber;
+        if ((missingTotals || missingMeta) && isLlmConfigured()) {
           onStep("filling_metadata", "Fetching missing fields...");
           try {
             const fill = await llmFillIn(text, abortSignal);
-            if (!hasTotals) {
-              const tax = fill.totalTax ?? 0;
-              const shipping = fill.totalShipping ?? 0;
-              if ((tax > 0 || shipping > 0) && extracted.items.length > 0) {
+            if (missingTotals) {
+              // Re-distribute with LLM totals filling gaps
+              const curTax = hasTax ? extracted.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0) : 0;
+              const curShip = hasShip ? extracted.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0) : 0;
+              const tax = hasTax ? curTax : (fill.totalTax ?? 0);
+              const shipping = hasShip ? curShip : (fill.totalShipping ?? 0);
+              if (tax > 0 || shipping > 0) {
                 distributeAndNormalize(extracted.items, shipping, tax);
               }
             }
-            // Fill missing metadata (don't overwrite what the template extracted)
             if (!extracted.orderNumber && fill.orderNumber) extracted.orderNumber = fill.orderNumber;
             if (!extracted.orderDate && fill.orderDate) extracted.orderDate = fill.orderDate;
             if (!extracted.technicianName && fill.technicianName) extracted.technicianName = fill.technicianName;
