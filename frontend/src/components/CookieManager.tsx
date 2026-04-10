@@ -31,6 +31,43 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function UploadMenu({ onPaste, onFile, onClose }: {
+  onPaste: () => void;
+  onFile: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  return (
+    <div ref={ref} className="absolute right-0 top-full mt-1 z-10 w-40 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-1">
+      <button
+        type="button"
+        onClick={() => { onPaste(); onClose(); }}
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+      >
+        <Icon name="content_paste" size={16} />
+        Paste cookies
+      </button>
+      <button
+        type="button"
+        onClick={() => { onFile(); onClose(); }}
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+      >
+        <Icon name="upload_file" size={16} />
+        Upload file
+      </button>
+    </div>
+  );
+}
+
 function PasteModal({ vendor, onDone, onClose }: {
   vendor: { id: number | null; vendorName: string; domain: string };
   onDone: () => void;
@@ -39,7 +76,6 @@ function PasteModal({ vendor, onDone, onClose }: {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Focus textarea on mount so paste works immediately
@@ -75,12 +111,6 @@ function PasteModal({ vendor, onDone, onClose }: {
     if (text.trim()) submitCookies(text);
   }
 
-  function handleFileSelected(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    file.text().then((text) => submitCookies(text));
-  }
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg w-full max-w-md mx-4 p-4" onClick={(e) => e.stopPropagation()}>
@@ -113,20 +143,9 @@ function PasteModal({ vendor, onDone, onClose }: {
               className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 resize-none"
               style={{ caretColor: "transparent" }}
             />
-            <div className="flex items-center justify-between mt-3">
-              <p className="text-xs text-gray-400 dark:text-gray-500">
-                Paste to auto-save. Cookies are encrypted immediately.
-              </p>
-              <input ref={fileInputRef} type="file" accept=".txt,.json" className="sr-only" onChange={handleFileSelected} />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
-              >
-                <Icon name="upload_file" size={14} />
-                File
-              </button>
-            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
+              Paste to auto-save. Cookies are encrypted immediately.
+            </p>
           </>
         )}
       </div>
@@ -143,6 +162,9 @@ export function CookieManager() {
   const [deleteTarget, setDeleteTarget] = useState<VendorCookie | null>(null);
   const [error, setError] = useState("");
   const [pasteTarget, setPasteTarget] = useState<{ id: number | null; vendorName: string; domain: string } | null>(null);
+  const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileUploadTarget, setFileUploadTarget] = useState<{ id: number | null; vendorName: string; domain: string } | null>(null);
 
   async function loadVendors() {
     try {
@@ -166,6 +188,38 @@ export function CookieManager() {
     setPasteTarget({ id: null, vendorName: customName, domain: customDomain });
   }
 
+  async function handleFileUpload(target: { id: number | null; vendorName: string; domain: string }, file: File) {
+    setError("");
+    const text = await file.text();
+    try {
+      if (target.id) {
+        await api(`/api/vendor-cookies/${target.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ cookiesTxt: text }),
+        });
+      } else {
+        await api("/api/vendor-cookies", {
+          method: "POST",
+          body: JSON.stringify({ vendorName: target.vendorName, domain: target.domain, cookiesTxt: text }),
+        });
+      }
+      setShowAddCustom(false);
+      setCustomName("");
+      setCustomDomain("");
+      await loadVendors();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    }
+  }
+
+  function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !fileUploadTarget) return;
+    handleFileUpload(fileUploadTarget, file);
+    setFileUploadTarget(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   async function handleDelete(vendor: VendorCookie) {
     try {
       await api(`/api/vendor-cookies/${vendor.id}`, { method: "DELETE" });
@@ -180,6 +234,8 @@ export function CookieManager() {
 
   return (
     <div className="space-y-3">
+      <input ref={fileInputRef} type="file" accept=".txt,.json" className="sr-only" onChange={onFileSelected} />
+
       {error && (
         <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
           {error}
@@ -200,14 +256,26 @@ export function CookieManager() {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => openPasteForVendor(v)}
-              className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
-              title="Add cookies (paste or upload)"
-            >
-              <Icon name="content_paste" size={16} />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpenId(menuOpenId === v.id ? null : v.id)}
+                className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                title="Add cookies"
+              >
+                <Icon name="add_circle_outline" size={16} />
+              </button>
+              {menuOpenId === v.id && (
+                <UploadMenu
+                  onPaste={() => openPasteForVendor(v)}
+                  onFile={() => {
+                    setFileUploadTarget({ id: v.id, vendorName: v.vendorName, domain: v.domain });
+                    fileInputRef.current?.click();
+                  }}
+                  onClose={() => setMenuOpenId(null)}
+                />
+              )}
+            </div>
             <button
               type="button"
               onClick={() => setDeleteTarget(v)}
@@ -246,14 +314,26 @@ export function CookieManager() {
             className="w-full px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
           />
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={openPasteForCustom}
-              disabled={!customName || !customDomain}
-              className="px-3 py-1.5 text-xs rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 disabled:opacity-40"
-            >
-              Add cookies
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpenId(menuOpenId === -1 ? null : -1)}
+                disabled={!customName || !customDomain}
+                className="px-3 py-1.5 text-xs rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 disabled:opacity-40"
+              >
+                Add cookies
+              </button>
+              {menuOpenId === -1 && customName && customDomain && (
+                <UploadMenu
+                  onPaste={openPasteForCustom}
+                  onFile={() => {
+                    setFileUploadTarget({ id: null, vendorName: customName, domain: customDomain });
+                    fileInputRef.current?.click();
+                  }}
+                  onClose={() => setMenuOpenId(null)}
+                />
+              )}
+            </div>
             <button
               type="button"
               onClick={() => { setShowAddCustom(false); setCustomName(""); setCustomDomain(""); }}
