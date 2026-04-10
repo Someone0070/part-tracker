@@ -245,17 +245,38 @@ export async function llmExtract(
   return parsed;
 }
 
+const LAYOUT_HINTS: Record<string, string> = {
+  "tab-delimited": `LAYOUT TYPE: Tab-delimited columns.
+- Items are on SINGLE LINES with TAB characters between fields
+- Split on \\t to identify columns. Use [^\\t]+ to match each column
+- The row regex should match one tab-separated line per item`,
+
+  "space-aligned": `LAYOUT TYPE: Space-aligned columns (like a table).
+- Columns are separated by 2+ spaces (NOT tabs)
+- There is a header row with column names (Quantity, Item name, Price, etc.)
+- Use \\s{2,} to match column separators (not single spaces, which appear within values)
+- Each item is on a single line
+- lineItems.start should match the header row
+- The row regex should match data rows below the header`,
+
+  "labeled": `LAYOUT TYPE: Labeled sections with key-value pairs.
+- Fields appear as "Label: Value" or "Label\\tValue"
+- Items may be in a table section with clear column headers
+- Look for section separators (dashes, blank lines, "Items:" headers)`,
+};
+
 export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
   abortSignal?: AbortSignal,
   modelOverride?: string,
-  columnHint?: string
+  columnHint?: string,
+  layoutType?: string
 ): Promise<ExtractionRules> {
   const model = modelOverride ?? TEMPLATE_MODEL;
   const client = getClientForModel(model);
   const start = Date.now();
-  console.log(`[LLM] template generation starting (${model})`);
+  console.log(`[LLM] template generation starting (${model}, layout=${layoutType ?? "unknown"})`);
 
   const itemsSummary = JSON.stringify(
     extraction.items.map((i) => ({
@@ -266,6 +287,8 @@ export async function llmGenerateTemplate(
     }))
   );
 
+  const layoutHint = layoutType && LAYOUT_HINTS[layoutType] ? `\n\n${LAYOUT_HINTS[layoutType]}` : "";
+
   const response = await client.chat.completions.create(
     {
       model,
@@ -274,7 +297,7 @@ export async function llmGenerateTemplate(
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Generate regex patterns to extract line items from this invoice format.\n\nItems found (for reference -- do NOT hardcode these values):\n${itemsSummary}${columnHint ? `\n\nIMPORTANT -- Column layout analysis of item lines:\n${columnHint}` : ""}\n\nRaw document text:\n${text}`,
+          content: `Generate regex patterns to extract line items from this invoice format.\n\nItems found (for reference -- do NOT hardcode these values):\n${itemsSummary}${layoutHint}${columnHint ? `\n\nIMPORTANT -- Column layout analysis of item lines:\n${columnHint}` : ""}\n\nRaw document text:\n${text}`,
         },
       ],
       response_format: {

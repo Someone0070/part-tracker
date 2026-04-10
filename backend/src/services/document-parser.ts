@@ -64,6 +64,37 @@ export function findBrand(text: string): string | null {
 
 const MAX_LLM_TEXT = 10_000;
 
+// --- Layout type detection ---
+
+export type LayoutType = "tab-delimited" | "n-of" | "space-aligned" | "labeled";
+
+export function detectLayoutType(text: string): LayoutType {
+  const lines = text.split("\n");
+
+  // Type A: Tab-delimited (4+ tab-separated columns on multiple lines)
+  const tabLines = lines.filter((l) => l.split("\t").length >= 4);
+  if (tabLines.length >= 2) return "tab-delimited";
+
+  // Type B: Amazon "N of:" format
+  if (/\d+\s+of:/i.test(text)) return "n-of";
+
+  // Type C: Space-aligned columns (header row + data rows with 2+ space gaps)
+  const headerPatterns = [
+    /quantity\s{2,}item\s*name/i,
+    /item\s*#?\s{2,}description/i,
+    /part\s*(?:number|#)\s{2,}/i,
+    /qty\s{2,}.*price/i,
+  ];
+  if (headerPatterns.some((p) => p.test(text))) return "space-aligned";
+
+  // Type D: Labeled sections (Order Number:, Invoice Date:, etc.)
+  const labelCount = (text.match(/(?:order|invoice|part)\s*(?:number|#|date|total)\s*:/gi) || []).length;
+  if (labelCount >= 2) return "labeled";
+
+  // Default to labeled (most generic)
+  return "labeled";
+}
+
 /**
  * Fix tracking numbers that got split across PDF lines.
  */
@@ -297,7 +328,9 @@ async function llmPath(
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
 
   // Template generation runs in background -- don't block the response
-  learnTemplateInBackground(text, llmText, extraction, existingTemplateId, columnHintFor(text, extraction));
+  const layout = detectLayoutType(text);
+  console.log(`[Layout] detected: ${layout}`);
+  learnTemplateInBackground(text, llmText, extraction, existingTemplateId, columnHintFor(text, extraction), layout);
 
   return docResult;
 }
@@ -331,8 +364,15 @@ function learnTemplateInBackground(
   llmText: string,
   extraction: import("./template-llm.js").LlmExtraction,
   existingTemplateId: number | undefined,
-  columnHint: string
+  columnHint: string,
+  layout: LayoutType
 ): void {
+  // Type B (Amazon "N of:") has multiline wrapped descriptions with
+  // interleaved seller metadata -- regex can't reliably handle this.
+  if (layout === "n-of") {
+    console.log("[Template] skipping n-of layout (multiline, nano-only)");
+    return;
+  }
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {
@@ -342,7 +382,7 @@ function learnTemplateInBackground(
   const bgTask = async () => {
     try {
       const templateRules = await withTimeout(
-        llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint),
+        llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint, layout),
         TEMPLATE_GEN_TIMEOUT, "mini template gen"
       );
 
@@ -391,7 +431,7 @@ function learnTemplateInBackground(
         console.log("[Template] escalating to Gemini 2.5 Flash...");
         try {
           const escalatedRules = await withTimeout(
-            llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint),
+            llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint, layout),
             30_000, "Gemini escalation"
           );
           const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
