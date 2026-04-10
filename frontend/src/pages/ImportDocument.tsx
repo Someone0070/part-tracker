@@ -5,13 +5,23 @@ import { UrlImportForm } from "../components/UrlImportForm";
 import { useSettings } from "../hooks/useSettings";
 
 const EXTRACTION_MODELS = [
-  { id: "qwen/qwen3.5-9b", label: "Qwen 9B", description: "Cheapest" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "Faster, smarter" },
+  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
+  { id: "glm-4.5-flash", label: "GLM 4.5 Flash", description: "Free" },
+  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M" },
+  { id: "glm-4.5-air", label: "GLM 4.5 Air", description: "$0.20/M" },
+  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M" },
+  { id: "qwen/qwen3.5-9b", label: "Qwen 9B", description: "$0.05/M" },
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "$0.065/M" },
 ] as const;
 
 const TEMPLATE_MODELS = [
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "Faster, cheaper" },
-  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 35B", description: "Smarter, 4x cost" },
+  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
+  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M" },
+  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M" },
+  { id: "glm-5", label: "GLM 5", description: "$1.00/M" },
+  { id: "glm-5.1", label: "GLM 5.1", description: "$1.40/M, best" },
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "$0.065/M" },
+  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 35B", description: "$0.16/M" },
 ] as const;
 
 function fileToBase64(file: File): Promise<string> {

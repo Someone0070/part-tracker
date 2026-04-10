@@ -209,7 +209,7 @@ async function llmExtractOnly(
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
     throw new Error(
-      "No extraction template for this vendor. Set OPENROUTER_API_KEY to enable automatic template learning."
+      "No extraction template for this vendor. Set GLM_API_KEY or OPENROUTER_API_KEY to enable automatic template learning."
     );
   }
 
@@ -259,7 +259,7 @@ async function llmPath(
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
     throw new Error(
-      "No extraction template for this vendor. Set OPENROUTER_API_KEY to enable automatic template learning."
+      "No extraction template for this vendor. Set GLM_API_KEY or OPENROUTER_API_KEY to enable automatic template learning."
     );
   }
 

@@ -26,27 +26,85 @@ export interface LlmResult {
   template: ExtractionRules;
 }
 
-// --- Model constants ---
+// --- Provider routing ---
 
-/** Available extraction models (user-selectable) */
+interface ProviderConfig {
+  baseURL: string;
+  envKey: string;
+}
+
+const PROVIDERS: Record<string, ProviderConfig> = {
+  openrouter: { baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" },
+  glm: { baseURL: "https://open.bigmodel.cn/api/paas/v4", envKey: "GLM_API_KEY" },
+};
+
+function getProviderForModel(modelId: string): { provider: string; model: string } {
+  if (modelId.startsWith("glm-")) {
+    return { provider: "glm", model: modelId };
+  }
+  // OpenRouter models have a prefix like "qwen/..."
+  return { provider: "openrouter", model: modelId };
+}
+
+const _clients: Record<string, OpenAI> = {};
+
+function getClient(provider: string): OpenAI {
+  if (!_clients[provider]) {
+    const config = PROVIDERS[provider];
+    if (!config) throw new Error(`Unknown provider: ${provider}`);
+    const apiKey = process.env[config.envKey];
+    if (!apiKey) throw new Error(`${config.envKey} is not set`);
+    _clients[provider] = new OpenAI({ apiKey, baseURL: config.baseURL });
+  }
+  return _clients[provider];
+}
+
+function getClientForModel(modelId: string): { client: OpenAI; model: string } {
+  const { provider, model } = getProviderForModel(modelId);
+  return { client: getClient(provider), model };
+}
+
+// --- Model lists ---
+
 export const EXTRACTION_MODELS = [
-  { id: "qwen/qwen3.5-9b", label: "Qwen 3.5 9B", description: "Cheapest" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "Faster, smarter" },
+  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
+  { id: "glm-4.5-flash", label: "GLM 4.5 Flash", description: "Free" },
+  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M in" },
+  { id: "glm-4.5-air", label: "GLM 4.5 Air", description: "$0.20/M in" },
+  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M in" },
+  { id: "qwen/qwen3.5-9b", label: "Qwen 3.5 9B", description: "$0.05/M in" },
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "$0.065/M in" },
 ] as const;
 
-/** Available template generation models (user-selectable) */
 export const TEMPLATE_MODELS = [
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "Faster, cheaper" },
-  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B", description: "Smarter, 4x cost" },
+  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
+  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M in" },
+  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M in" },
+  { id: "glm-5", label: "GLM 5", description: "$1.00/M in" },
+  { id: "glm-5.1", label: "GLM 5.1", description: "$1.40/M in, best" },
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "$0.065/M in" },
+  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B", description: "$0.16/M in" },
 ] as const;
 
-export type ExtractionModelId = typeof EXTRACTION_MODELS[number]["id"];
-export type TemplateModelId = typeof TEMPLATE_MODELS[number]["id"];
+export type ExtractionModelId = string;
+export type TemplateModelId = string;
 
-export const DEFAULT_EXTRACTION_MODEL: ExtractionModelId = "qwen/qwen3.5-flash-02-23";
-export const DEFAULT_TEMPLATE_MODEL: TemplateModelId = "qwen/qwen3.5-flash-02-23";
+export const DEFAULT_EXTRACTION_MODEL = "glm-4.7-flash";
+export const DEFAULT_TEMPLATE_MODEL = "glm-4.7-flash";
 
-// --- Extraction ---
+/** All valid model IDs for validation */
+export const ALL_MODEL_IDS = [
+  ...new Set([
+    ...EXTRACTION_MODELS.map((m) => m.id),
+    ...TEMPLATE_MODELS.map((m) => m.id),
+  ]),
+];
+
+export function isLlmConfigured(): boolean {
+  return !!process.env.OPENROUTER_API_KEY || !!process.env.GLM_API_KEY;
+}
+
+// --- Prompts ---
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals.
 
@@ -75,8 +133,6 @@ Reply with ONLY a JSON object in this exact format (no other text):
     }
   ]
 }`;
-
-// --- Template generation ---
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex-based extraction templates for invoice formats. You will receive the raw document text and the extracted data. Generate regex patterns that can re-extract the same data from any invoice in the same format.
 
@@ -138,46 +194,31 @@ Reply with ONLY a JSON object in this exact format (no other text):
   "totalShipping": number or null
 }`;
 
-let _client: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  if (!_client) {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
-    _client = new OpenAI({
-      apiKey,
-      baseURL: "https://openrouter.ai/api/v1",
-    });
-  }
-  return _client;
-}
-
-export function isLlmConfigured(): boolean {
-  return !!process.env.OPENROUTER_API_KEY;
-}
+// --- Helpers ---
 
 /** Parse JSON from LLM response, stripping markdown fences if present */
 function parseJson<T>(raw: string): T {
   let cleaned = raw.trim();
-  // Strip ```json ... ``` wrapping
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
   }
   return JSON.parse(cleaned) as T;
 }
 
+// --- API functions ---
+
 export async function llmExtract(
   text: string,
   extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<LlmExtraction> {
-  const client = getClient();
+  const { client, model } = getClientForModel(extractionModel);
   const start = Date.now();
   console.log(`[LLM] extraction starting (${extractionModel}, ${text.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model: extractionModel,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
@@ -199,7 +240,6 @@ export async function llmExtract(
   }
 
   const parsed = parseJson<LlmExtraction>(content);
-  // Defensive: ensure items is an array
   if (!Array.isArray(parsed.items)) parsed.items = [];
   console.log(`[LLM] extraction done (${elapsed}s) -- ${parsed.items.length} items, vendor=${parsed.vendor}`);
   return parsed;
@@ -211,7 +251,7 @@ export async function llmGenerateTemplate(
   templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<ExtractionRules> {
-  const client = getClient();
+  const { client, model } = getClientForModel(templateModel);
   const start = Date.now();
   console.log(`[LLM] template generation starting (${templateModel})`);
 
@@ -230,7 +270,7 @@ export async function llmGenerateTemplate(
 
   const response = await client.chat.completions.create(
     {
-      model: templateModel,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
@@ -264,15 +304,12 @@ interface FieldFailureInput {
   context: string;
 }
 
-/**
- * Ask the template model to fix specific regex patterns that failed validation.
- */
 export async function llmRepairRegex(
   failures: FieldFailureInput[],
   templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
-  const client = getClient();
+  const { client, model } = getClientForModel(templateModel);
   const start = Date.now();
   const names = failures.map((f) => f.name).join(", ");
   console.log(`[LLM] regex repair starting (${templateModel}) -- fixing: ${names}`);
@@ -283,7 +320,7 @@ export async function llmRepairRegex(
 
   const response = await client.chat.completions.create(
     {
-      model: templateModel,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: REPAIR_SYSTEM_PROMPT },
@@ -317,22 +354,19 @@ export interface TemplateFillIn {
   totalShipping: number | null;
 }
 
-/**
- * Cheap call to fill in fields the template regex couldn't extract.
- */
 export async function llmFillIn(
   text: string,
   extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<TemplateFillIn> {
-  const client = getClient();
+  const { client, model } = getClientForModel(extractionModel);
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
   const start = Date.now();
   console.log(`[LLM] fill-in starting (${extractionModel}, ${snippet.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model: extractionModel,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: FILL_IN_SYSTEM_PROMPT },

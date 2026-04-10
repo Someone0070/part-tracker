@@ -4,4 +4,4 @@ ALTER TABLE "vendor_templates"
 
 -- Add template model selection to settings
 ALTER TABLE "settings"
-  ADD COLUMN "template_model" text NOT NULL DEFAULT 'qwen/qwen3.5-flash-02-23';
+  ADD COLUMN "template_model" text NOT NULL DEFAULT 'glm-4.7-flash';

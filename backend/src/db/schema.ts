@@ -62,8 +62,8 @@ export const settings = pgTable("settings", {
   apiKeyHash: text("api_key_hash"),
   apiKeyPrefix: text("api_key_prefix"),
   apiKeyScopes: text("api_key_scopes"),
-  extractionModel: text("extraction_model").notNull().default("qwen/qwen3.5-flash-02-23"),
-  templateModel: text("template_model").notNull().default("qwen/qwen3.5-flash-02-23"),
+  extractionModel: text("extraction_model").notNull().default("glm-4.7-flash"),
+  templateModel: text("template_model").notNull().default("glm-4.7-flash"),
 });
 
 export const inventoryEvents = pgTable("inventory_events", {
