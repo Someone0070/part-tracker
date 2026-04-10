@@ -2,7 +2,7 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured } from "./template-llm.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, isEscalationConfigured, ESCALATION_MODEL } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -315,6 +315,35 @@ async function llmPath(
       } else {
         console.warn("Template repair failed after retry:", validation.reason);
         onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
+      }
+    }
+
+    // Escalation: if mini failed, try once with Gemini 2.5 Flash
+    if (!saved && isEscalationConfigured()) {
+      onStep("escalating_template", "Escalating to Gemini 2.5 Flash...");
+      try {
+        const escalatedRules = await llmGenerateTemplate(llmText, extraction, abortSignal, ESCALATION_MODEL);
+        const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
+        if (escalatedValidation.valid) {
+          const failures = findFieldFailures(text, escalatedRules, extraction);
+          if (failures.length > 0) {
+            await applyRepairs(text, escalatedRules, failures, abortSignal);
+          }
+          const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
+          escalatedRules.totals = escalatedRules.totals.filter((t) => {
+            const m = safeMatch(text, t.regex, "s");
+            const val = m?.[1] ? parseFloat(m[1]) : 0;
+            const llmVal = t.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
+            return !(val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1));
+          });
+          await upsertTemplate(escalatedRules, existingTemplateId);
+          onStep("template_stored", "Template learned via Gemini escalation. Future invoices will be instant.");
+          saved = true;
+        } else {
+          console.warn("Escalated template also failed:", escalatedValidation.reason);
+        }
+      } catch (err) {
+        console.warn("Escalation failed:", err);
       }
     }
 

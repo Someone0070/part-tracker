@@ -30,20 +30,43 @@ export interface LlmResult {
 
 export const EXTRACTION_MODEL = "gpt-5.4-nano";
 export const TEMPLATE_MODEL = "gpt-5.4-mini";
+export const ESCALATION_MODEL = "gemini-2.5-flash";
 
-let _client: OpenAI | null = null;
+let _openaiClient: OpenAI | null = null;
+let _geminiClient: OpenAI | null = null;
 
-function getClient(): OpenAI {
-  if (!_client) {
+function getOpenAIClient(): OpenAI {
+  if (!_openaiClient) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
-    _client = new OpenAI({ apiKey });
+    _openaiClient = new OpenAI({ apiKey });
   }
-  return _client;
+  return _openaiClient;
+}
+
+function getGeminiClient(): OpenAI {
+  if (!_geminiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
+    _geminiClient = new OpenAI({
+      apiKey,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    });
+  }
+  return _geminiClient;
+}
+
+function getClientForModel(model: string): OpenAI {
+  if (model.startsWith("gemini")) return getGeminiClient();
+  return getOpenAIClient();
 }
 
 export function isLlmConfigured(): boolean {
   return !!process.env.OPENAI_API_KEY;
+}
+
+export function isEscalationConfigured(): boolean {
+  return !!process.env.GEMINI_API_KEY;
 }
 
 // --- Schemas ---
@@ -217,7 +240,7 @@ export async function llmExtract(
   text: string,
   abortSignal?: AbortSignal
 ): Promise<LlmExtraction> {
-  const client = getClient();
+  const client = getOpenAIClient();
   const start = Date.now();
   console.log(`[LLM] extraction starting (${EXTRACTION_MODEL}, ${text.length} chars)`);
 
@@ -255,11 +278,13 @@ export async function llmExtract(
 export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  modelOverride?: string
 ): Promise<ExtractionRules> {
-  const client = getClient();
+  const model = modelOverride ?? TEMPLATE_MODEL;
+  const client = getClientForModel(model);
   const start = Date.now();
-  console.log(`[LLM] template generation starting (${TEMPLATE_MODEL})`);
+  console.log(`[LLM] template generation starting (${model})`);
 
   const extractionSummary = JSON.stringify({
     vendor: extraction.vendor,
@@ -276,7 +301,7 @@ export async function llmGenerateTemplate(
 
   const response = await client.chat.completions.create(
     {
-      model: TEMPLATE_MODEL,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
@@ -317,7 +342,7 @@ export async function llmRepairRegex(
   failures: FieldFailureInput[],
   abortSignal?: AbortSignal
 ): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
-  const client = getClient();
+  const client = getOpenAIClient();
   const start = Date.now();
   const names = failures.map((f) => f.name).join(", ");
   console.log(`[LLM] regex repair starting (${TEMPLATE_MODEL}) -- fixing: ${names}`);
@@ -368,7 +393,7 @@ export async function llmFillIn(
   text: string,
   abortSignal?: AbortSignal
 ): Promise<TemplateFillIn> {
-  const client = getClient();
+  const client = getOpenAIClient();
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
   const start = Date.now();
   console.log(`[LLM] fill-in starting (${EXTRACTION_MODEL}, ${snippet.length} chars)`);
