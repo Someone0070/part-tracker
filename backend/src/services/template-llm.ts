@@ -279,7 +279,8 @@ export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
   abortSignal?: AbortSignal,
-  modelOverride?: string
+  modelOverride?: string,
+  columnHint?: string
 ): Promise<ExtractionRules> {
   const model = modelOverride ?? TEMPLATE_MODEL;
   const client = getClientForModel(model);
@@ -307,7 +308,7 @@ export async function llmGenerateTemplate(
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Generate a reusable regex extraction template for this invoice format.\n\nExtracted data (for reference -- do NOT hardcode these values):\n${extractionSummary}\n\nRaw document text:\n${text}`,
+          content: `Generate a reusable regex extraction template for this invoice format.\n\nExtracted data (for reference -- do NOT hardcode these values):\n${extractionSummary}${columnHint ? `\n\nIMPORTANT -- Column layout analysis of item lines:\n${columnHint}` : ""}\n\nRaw document text:\n${text}`,
         },
       ],
       response_format: {

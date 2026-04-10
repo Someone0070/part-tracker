@@ -261,9 +261,25 @@ async function llmPath(
     rawText: text,
   };
 
+  // Build column hint from first item's line in the text
+  let columnHint = "";
+  if (extraction.items.length > 0) {
+    const firstItem = extraction.items[0];
+    const itemLine = text.split("\n").find((line) =>
+      line.includes(firstItem.partNumber)
+    );
+    if (itemLine && itemLine.includes("\t")) {
+      const cols = itemLine.split("\t");
+      const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
+      if (pnIdx >= 0) {
+        columnHint = `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
+      }
+    }
+  }
+
   onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
   try {
-    const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal);
+    const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal, undefined, columnHint);
 
     let saved = false;
     for (let attempt = 0; attempt < 2 && !saved; attempt++) {
@@ -292,18 +308,29 @@ async function llmPath(
         console.warn("Template validation failed:", validation.reason);
         onStep("repairing_template", "Template failed validation. Attempting repair...");
 
-        const itemFailure = validation.reason?.includes("items");
+        const itemFailure = validation.reason?.includes("items") || validation.reason?.includes("partNumber");
         if (itemFailure && extraction.items.length > 0) {
           const firstItem = extraction.items[0];
           const itemContext = text.split("\n").find((line) =>
             line.includes(firstItem.partNumber) || (firstItem.partName && line.includes(firstItem.partName.split(" ")[0]))
           ) ?? "";
+
+          // Annotate the columns so the model knows the actual field order
+          let columnAnnotation = "";
+          if (itemContext.includes("\t")) {
+            const cols = itemContext.split("\t");
+            const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
+            if (pnIdx >= 0) {
+              columnAnnotation = `\n\nThe line has ${cols.length} tab-separated columns. Column ${pnIdx + 1} contains the part number "${firstItem.partNumber}". The actual column values are:\n${cols.map((c, i) => `  col${i + 1}: "${c.trim()}"`).join("\n")}`;
+            }
+          }
+
           const repairs = await llmRepairRegex([{
             name: "row",
             type: "field" as const,
             expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
             got: "(0 items matched)",
-            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nExample item line from text:\n${itemContext}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
+            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nExample item line from text:\n${itemContext}${columnAnnotation}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
           }], abortSignal);
 
           for (const repair of repairs) {
@@ -322,7 +349,7 @@ async function llmPath(
     if (!saved && isEscalationConfigured()) {
       onStep("escalating_template", "Escalating to Gemini 2.5 Flash...");
       try {
-        const escalatedRules = await llmGenerateTemplate(llmText, extraction, abortSignal, ESCALATION_MODEL);
+        const escalatedRules = await llmGenerateTemplate(llmText, extraction, abortSignal, ESCALATION_MODEL, columnHint);
         const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
         if (escalatedValidation.valid) {
           const failures = findFieldFailures(text, escalatedRules, extraction);
