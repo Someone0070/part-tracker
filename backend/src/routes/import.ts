@@ -112,7 +112,7 @@ router.post(
       .set({ status: "active", lastTestedAt: new Date(), updatedAt: new Date() })
       .where(eq(vendorCookies.id, cookieRow.id));
 
-    // 7. Run unified parse chain (hardcoded -> preset -> LLM)
+    // 7. Run unified parse chain (preset -> LLM)
     const vendorKey = cookieRow.domain;
     const { result } = await parseHtmlChain(
       fetchResult.html,

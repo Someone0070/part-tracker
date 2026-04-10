@@ -13,24 +13,26 @@ import {
 
 // --- Redaction ---
 
+/**
+ * Strip HTML to text for LLM extraction.
+ * Removes scripts/styles/nav/footer but keeps order content intact.
+ * Only redacts PII (names, emails, addresses, card numbers).
+ */
 export function redactForLlm(html: string): string {
   const $ = cheerio.load(html);
   $("script, style, noscript, iframe, svg").remove();
-  $("nav, footer, header, [role='navigation'], [role='banner']").remove();
-  $("[class*='address'], [class*='shipping'], [class*='billing'], [class*='payment']").remove();
-  $("[class*='ship-to'], [class*='payment-method'], [class*='buyer-info']").remove();
+  $("nav, footer, [role='navigation'], [role='banner']").remove();
 
   let text = $.text();
 
   text = text
-    .replace(/\b[A-Z][a-z]+ [A-Z][a-z]+\s*\n\s*\d+\s+[A-Z]/g, "[NAME]\n[ADDRESS]")
     .replace(/[\w.-]+@[\w.-]+\.\w{2,}/g, "[EMAIL]")
     .replace(/\b(?!\d{3}-\d{7}-\d{7})\d{3}[-.]?\d{3}[-.]?\d{4}\b/g, "[PHONE]")
     .replace(/\b\d+\s+[A-Z][a-z]+\s+(St|Ave|Rd|Blvd|Dr|Ln|Ct|Way|Pl|Cir|Street|Avenue|Road|Drive|Lane|Boulevard)\b[^,]*/gi, "[ADDRESS]")
     .replace(/ending in \d{4}/gi, "ending in [XXXX]");
 
   text = text.replace(/\s+/g, " ").trim();
-  return text.slice(0, 6000);
+  return text.slice(0, 8000);
 }
 
 export function scrubHtmlForSelectors(html: string): string {
@@ -51,14 +53,6 @@ export function scrubHtmlForSelectors(html: string): string {
 
   $("input[type='hidden']").remove();
   $("meta").remove();
-
-  $("[class*='address'], [class*='shipping'], [class*='billing'], [class*='payment']")
-    .each(function (this: any) {
-      $(this).contents().filter(function (this: any) { return this.type === "text"; })
-        .each(function (this: any) { $(this).replaceWith("[REDACTED]"); });
-      $(this).find("*").contents().filter(function (this: any) { return this.type === "text"; })
-        .each(function (this: any) { $(this).replaceWith("[REDACTED]"); });
-    });
 
   const result = $.html();
   return result.replace(/<!--[\s\S]*?-->/g, "").slice(0, 8000);
@@ -134,52 +128,13 @@ export function parseHtmlWithSelectors(
   };
 }
 
-// --- Hardcoded vendor parsers ---
-
-const AMAZON_HTML_CONFIG: HtmlSelectorConfig = {
-  type: "html",
-  itemContainer: ".a-fixed-left-grid.shipment",
-  fields: {
-    partName: ".yohtmlc-product-title",
-    unitPrice: ".a-color-price",
-    quantity: ".item-view-qty",
-  },
-  orderFields: {
-    orderNumber: ".order-date-invoice-item .a-color-secondary",
-    orderDate: ".order-date-invoice-item span:not(.a-color-secondary)",
-    totalShipping: ".shipping-total",
-    totalTax: ".tax-total",
-  },
-};
-
-const EBAY_HTML_CONFIG: HtmlSelectorConfig = {
-  type: "html",
-  itemContainer: ".line-item",
-  fields: {
-    partName: ".item-title",
-    unitPrice: ".item-price",
-    quantity: ".item-qty",
-  },
-  orderFields: {
-    orderNumber: ".order-number",
-    orderDate: ".order-date",
-    totalShipping: ".shipping-cost",
-    totalTax: ".tax-amount",
-  },
-};
-
-function detectKnownVendorHtml(hostname: string): HtmlSelectorConfig | null {
-  const host = hostname.toLowerCase();
-  if (host.includes("amazon")) return AMAZON_HTML_CONFIG;
-  if (host.includes("ebay")) return EBAY_HTML_CONFIG;
-  return null;
-}
-
 // --- Unified parse chain ---
+// 1. Learned CSS preset (free, instant)
+// 2. LLM extraction (nano, works on any website, learns selectors for next time)
 
 export interface ParseChainResult {
   result: DocumentResult;
-  source: "hardcoded" | "preset" | "llm" | "empty";
+  source: "preset" | "llm" | "empty";
 }
 
 export async function parseHtmlChain(
@@ -192,46 +147,34 @@ export async function parseHtmlChain(
 ): Promise<ParseChainResult> {
   const fingerprint = computePageFingerprint(html);
 
-  // Stage 1: Hardcoded parser
-  const hardcodedConfig = detectKnownVendorHtml(hostname);
-  if (hardcodedConfig) {
-    const hardcodedResult = parseHtmlWithSelectors(html, hardcodedConfig, vendorName);
-    const validation = validateExtractionResult(hardcodedResult);
-    console.log(`[HTMLParse] Stage 1 (hardcoded): ${hardcodedResult.items.length} items, valid=${validation.valid}`);
-    if (validation.valid) {
-      return { result: hardcodedResult, source: "hardcoded" };
-    }
-  } else {
-    console.log(`[HTMLParse] Stage 1: no hardcoded parser for ${hostname}`);
-  }
-
-  // Stage 2: Saved preset
+  // Stage 1: Saved preset (learned CSS selectors)
   const presetData = await tryPresetParse(vendorKey, "html", fingerprint);
   if (presetData && presetData.config.type === "html") {
     const presetResult = parseHtmlWithSelectors(html, presetData.config, vendorName);
     const validation = validateExtractionResult(presetResult);
-    console.log(`[HTMLParse] Stage 2 (preset): ${presetResult.items.length} items, valid=${validation.valid}`);
+    console.log(`[HTMLParse] Preset: ${presetResult.items.length} items, valid=${validation.valid}`);
     if (validation.valid) {
       await recordPresetSuccess(presetData.preset.id);
       return { result: presetResult, source: "preset" };
     }
     await recordPresetFailure(presetData.preset.id);
   } else {
-    console.log(`[HTMLParse] Stage 2: no preset for ${vendorKey}`);
+    console.log(`[HTMLParse] No preset for ${vendorKey}`);
   }
 
-  // Stage 3: LLM fallback
+  // Stage 2: LLM extraction (works on any website)
   const llmResult = await llmFallback(html);
-  console.log(`[HTMLParse] Stage 3 (LLM): ${llmResult ? `${llmResult.items.length} items` : "null"}`);
+  console.log(`[HTMLParse] LLM: ${llmResult ? `${llmResult.items.length} items` : "null"}`);
   if (llmResult) {
     const validation = validateExtractionResult(llmResult);
-    console.log(`[HTMLParse] Stage 3 validation: valid=${validation.valid}, issues=${validation.issues?.join(", ")}`);
     if (validation.valid) {
+      // Learn CSS selectors in background for future free extractions
       onLearnSelectors?.(llmResult, html, vendorKey, fingerprint).catch((err) => {
         console.error("Selector learning failed:", err);
       });
       return { result: llmResult, source: "llm" };
     }
+    console.warn(`[HTMLParse] LLM result invalid:`, validation.issues);
   }
 
   return {
