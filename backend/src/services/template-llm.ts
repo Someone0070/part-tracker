@@ -28,8 +28,8 @@ export interface LlmResult {
 
 // --- Model constants ---
 
-/** Cheap model for extraction + fill-in */
-const EXTRACTION_MODEL = "qwen/qwen3.5-9b";
+/** Model for extraction + fill-in */
+const EXTRACTION_MODEL = "qwen/qwen3.5-flash-02-23";
 
 /** Available template generation models (user-selectable) */
 export const TEMPLATE_MODELS = [
