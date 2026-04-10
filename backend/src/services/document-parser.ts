@@ -151,6 +151,10 @@ export async function parseDocument(
 
         if (sanity.failures.length > 0) {
           console.warn(`Template sanity warnings (score=${sanity.score}):`, sanity.failures);
+          // Warnings present but passed -- still trigger background repair to fix minor issues
+          if (isLlmConfigured()) {
+            repairTemplateFromSanity(text, tpl.id, tpl.extractionRules, sanity.failures, abortSignal).catch(() => {});
+          }
         }
 
         incrementSuccess(tpl.id).catch(() => {});
@@ -541,6 +545,32 @@ async function repairTemplateFromSanity(
           context: line,
         });
       }
+    }
+
+    // Totals: compare tax/shipping from nano vs template
+    const templateTax = templateResult.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0);
+    const templateShip = templateResult.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0);
+    if (correct.totalTax != null && Math.abs((correct.totalTax ?? 0) - templateTax) > 0.5) {
+      const taxStr = String(correct.totalTax);
+      const line = text.split("\n").find((l) => l.includes(taxStr)) ?? "";
+      repairFailures.push({
+        name: "tax",
+        type: "total",
+        expected: taxStr,
+        got: String(templateTax),
+        context: line,
+      });
+    }
+    if (correct.totalShipping != null && Math.abs((correct.totalShipping ?? 0) - templateShip) > 0.5) {
+      const shipStr = String(correct.totalShipping);
+      const line = text.split("\n").find((l) => l.includes(shipStr)) ?? "";
+      repairFailures.push({
+        name: "shipping",
+        type: "total",
+        expected: shipStr,
+        got: String(templateShip),
+        context: line,
+      });
     }
 
     if (repairFailures.length === 0) return;

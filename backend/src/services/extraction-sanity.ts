@@ -94,17 +94,23 @@ export function checkExtraction(result: DocumentResult): SanityResult {
 
   // --- Date sanity ---
   if (result.orderDate) {
-    const d = new Date(result.orderDate);
-    if (isNaN(d.getTime())) {
-      failures.push(`Order date "${result.orderDate}" is not a valid date`);
-      score -= 10;
+    // A real date should have at least 6 chars (e.g., "1/1/26") -- reject bare years/months
+    if (result.orderDate.length < 6) {
+      failures.push(`Order date "${result.orderDate}" is too short to be a full date`);
+      score -= 25;
     } else {
-      const now = Date.now();
-      const twoYearsAgo = now - 2 * 365 * 24 * 60 * 60 * 1000;
-      const oneWeekAhead = now + 7 * 24 * 60 * 60 * 1000;
-      if (d.getTime() < twoYearsAgo || d.getTime() > oneWeekAhead) {
-        failures.push(`Order date ${result.orderDate} is outside reasonable range`);
+      const d = new Date(result.orderDate);
+      if (isNaN(d.getTime())) {
+        failures.push(`Order date "${result.orderDate}" is not a valid date`);
         score -= 10;
+      } else {
+        const now = Date.now();
+        const twoYearsAgo = now - 2 * 365 * 24 * 60 * 60 * 1000;
+        const oneWeekAhead = now + 7 * 24 * 60 * 60 * 1000;
+        if (d.getTime() < twoYearsAgo || d.getTime() > oneWeekAhead) {
+          failures.push(`Order date ${result.orderDate} is outside reasonable range`);
+          score -= 10;
+        }
       }
     }
   }
