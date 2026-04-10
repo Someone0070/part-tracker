@@ -64,9 +64,9 @@ const MODELS: Array<{ id: ExtractionModel; label: string; cost: string }> = [
 ];
 
 const MODES: Array<{ id: ExtractionMode; label: string; desc: string }> = [
-  { id: "llm", label: "LLM Only", desc: "Nano extracts everything, no templates" },
-  { id: "template", label: "Template", desc: "Regex items + nano metadata" },
-  { id: "template+", label: "Template+", desc: "Full regex extraction, no LLM needed" },
+  { id: "llm", label: "LLM Only", desc: "LLM extracts everything, no templates" },
+  { id: "template", label: "Template", desc: "Regex items, LLM fills metadata + gaps" },
+  { id: "template+", label: "Template+", desc: "Full regex first, LLM fills any gaps" },
 ];
 
 export function ImportDocument() {
@@ -268,8 +268,7 @@ export function ImportDocument() {
                 </p>
               </div>
 
-              {mode !== "template+" && (
-                <div>
+              <div>
                   <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Model</label>
                   <div className="space-y-1">
                     {MODELS.map((m) => (
@@ -296,7 +295,6 @@ export function ImportDocument() {
                     ))}
                   </div>
                 </div>
-              )}
             </div>
           )}
         </div>
