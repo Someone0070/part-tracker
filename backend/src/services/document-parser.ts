@@ -138,8 +138,14 @@ export async function parseDocument(
         const sanity = checkExtraction(extracted);
         if (!sanity.pass) {
           console.warn(`Template sanity check FAILED (score=${sanity.score}):`, sanity.failures);
-          onStep("sanity_failed", `Template data looks wrong (${sanity.failures[0]}). Falling back to LLM...`);
+          onStep("sanity_failed", `Template data looks wrong (${sanity.failures[0]}). Repairing...`);
           incrementFail(tpl.id).catch(() => {});
+
+          // Background repair: use nano to get correct values, then fix the template
+          if (isLlmConfigured()) {
+            repairTemplateFromSanity(text, tpl.id, tpl.extractionRules, sanity.failures, abortSignal).catch(() => {});
+          }
+
           return llmExtractOnly(text, onStep, abortSignal);
         }
 
@@ -466,6 +472,96 @@ async function applyRepairs(
     }
   } catch {
     console.warn("Template repair failed");
+  }
+}
+
+/**
+ * Fire-and-forget: when sanity checks fail, get correct values from nano
+ * and send the diff to the repair loop to fix the template regex.
+ */
+async function repairTemplateFromSanity(
+  text: string,
+  templateId: number,
+  rules: ExtractionRules,
+  sanityFailures: string[],
+  abortSignal?: AbortSignal
+): Promise<void> {
+  try {
+    const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
+    const correct = await llmExtract(llmText, abortSignal);
+    if (correct.items.length === 0) return;
+
+    // Apply the template to get what it currently extracts
+    const templateResult = applyTemplate(text, rules);
+
+    // Build repair targets from the diff between template and correct extraction
+    const repairFailures: FieldFailure[] = [];
+    const firstCorrect = correct.items[0];
+    const firstTemplate = templateResult.items[0];
+
+    // Part number wrong or missing
+    if (!firstTemplate || firstTemplate.partNumber !== firstCorrect.partNumber) {
+      const itemLine = text.split("\n").find((l) => l.includes(firstCorrect.partNumber)) ?? "";
+      repairFailures.push({
+        name: "row",
+        type: "field",
+        expected: `partNumber=${firstCorrect.partNumber}, quantity=${firstCorrect.quantity}, unitPrice=${firstCorrect.unitPrice}`,
+        got: firstTemplate ? `partNumber=${firstTemplate.partNumber}` : "(no match)",
+        context: `Row regex: ${rules.lineItems.row}\nCorrect item line: ${itemLine}`,
+      });
+    }
+
+    // Price wrong
+    if (firstTemplate && firstCorrect.unitPrice != null &&
+        firstTemplate.unitPrice != null &&
+        Math.abs(firstTemplate.unitPrice - firstCorrect.unitPrice) > 0.01) {
+      repairFailures.push({
+        name: "row",
+        type: "field",
+        expected: `unitPrice=${firstCorrect.unitPrice}`,
+        got: `unitPrice=${firstTemplate.unitPrice}`,
+        context: `Row regex: ${rules.lineItems.row}\nThe regex is grabbing the wrong column for unitPrice.`,
+      });
+    }
+
+    // Field-level repairs (order number, tracking, etc.)
+    const fieldChecks: Array<{ name: string; correct: string | null; templateVal: string | null }> = [
+      { name: "orderNumber", correct: correct.orderNumber, templateVal: templateResult.orderNumber },
+      { name: "trackingNumber", correct: correct.trackingNumber, templateVal: templateResult.trackingNumber },
+      { name: "orderDate", correct: correct.orderDate, templateVal: templateResult.orderDate },
+    ];
+    for (const { name, correct: cv, templateVal } of fieldChecks) {
+      if (cv && cv !== templateVal) {
+        const line = text.split("\n").find((l) => l.includes(cv)) ?? "";
+        repairFailures.push({
+          name,
+          type: "field",
+          expected: cv,
+          got: templateVal ?? "(no match)",
+          context: line,
+        });
+      }
+    }
+
+    if (repairFailures.length === 0) return;
+
+    console.log(`[Sanity repair] Attempting to fix ${repairFailures.length} issues for template ${templateId}`);
+    await applyRepairs(text, rules, repairFailures, abortSignal);
+
+    // Re-validate after repairs
+    const recheck = applyTemplate(text, rules);
+    if (recheck.items.length > 0) {
+      const { checkExtraction } = await import("./extraction-sanity.js");
+      const recheckSanity = checkExtraction(recheck);
+      if (recheckSanity.pass) {
+        await upsertTemplate(rules, templateId);
+        console.log(`[Sanity repair] Template ${templateId} repaired successfully`);
+      } else {
+        console.warn(`[Sanity repair] Repaired template still fails sanity:`, recheckSanity.failures);
+      }
+    }
+  } catch (err) {
+    console.warn("[Sanity repair] Failed:", err);
   }
 }
 
