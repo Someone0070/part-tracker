@@ -267,11 +267,10 @@ function recoverTotals(
     }
   }
 
-  if (tax > 0 || shipping > 0) {
-    if (tax !== llmTax || shipping !== llmShipping) {
-      console.log(`[Recovery] totals recovered from text: tax=${llmTax}->${tax}, shipping=${llmShipping}->${shipping}`);
-    }
-    return { tax, shipping };
+  // If Strategy 1 found new values, log and return
+  if (tax !== llmTax || shipping !== llmShipping) {
+    console.log(`[Recovery] totals recovered from text: tax=${llmTax}->${tax}, shipping=${llmShipping}->${shipping}`);
+    if (tax > 0 && shipping > 0) return { tax, shipping };
   }
 
   // Strategy 2: math-based -- find total and subtotal in the text, compute gap
@@ -342,11 +341,12 @@ function recoverTotals(
         if (Math.abs(sum - gap) < 0.01) {
           // Found a pair that sums to the gap -- smaller is likely tax, larger is shipping
           // (common pattern: shipping > tax for parts orders)
+          // Override LLM values even if non-zero -- math is authoritative
           const [smaller, larger] = candidates[i] < candidates[j]
             ? [candidates[i], candidates[j]]
             : [candidates[j], candidates[i]];
-          if (tax === 0) tax = smaller;
-          if (shipping === 0) shipping = larger;
+          tax = smaller;
+          shipping = larger;
           console.log(`[Recovery] totals from math: gap=${gap}, tax=${smaller}, shipping=${larger} (total=${docTotal}, subtotal=${docSubtotal})`);
           return { tax, shipping };
         }
