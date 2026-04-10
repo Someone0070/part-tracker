@@ -184,6 +184,8 @@ export async function llmExtract(
   abortSignal?: AbortSignal
 ): Promise<LlmExtraction> {
   const client = getClient();
+  const start = Date.now();
+  console.log(`[LLM] extraction starting (${EXTRACTION_MODEL}, ${text.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
@@ -205,9 +207,15 @@ export async function llmExtract(
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("Empty LLM response");
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  if (!content) {
+    console.log(`[LLM] extraction EMPTY response (${elapsed}s)`);
+    throw new Error("Empty LLM response");
+  }
 
-  return JSON.parse(content) as LlmExtraction;
+  const parsed = JSON.parse(content) as LlmExtraction;
+  console.log(`[LLM] extraction done (${elapsed}s) -- ${parsed.items.length} items, vendor=${parsed.vendor}`);
+  return parsed;
 }
 
 export async function llmGenerateTemplate(
@@ -217,6 +225,8 @@ export async function llmGenerateTemplate(
   abortSignal?: AbortSignal
 ): Promise<ExtractionRules> {
   const client = getClient();
+  const start = Date.now();
+  console.log(`[LLM] template generation starting (${templateModel})`);
 
   const extractionSummary = JSON.stringify({
     vendor: extraction.vendor,
@@ -251,9 +261,15 @@ export async function llmGenerateTemplate(
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("Empty template generation response");
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  if (!content) {
+    console.log(`[LLM] template generation EMPTY response (${elapsed}s)`);
+    throw new Error("Empty template generation response");
+  }
 
-  return JSON.parse(content) as ExtractionRules;
+  const parsed = JSON.parse(content) as ExtractionRules;
+  console.log(`[LLM] template generation done (${elapsed}s) -- vendor=${parsed.vendorName}, ${parsed.fields.length} fields, ${parsed.totals.length} totals`);
+  return parsed;
 }
 
 const REPAIR_SCHEMA = {
@@ -299,6 +315,9 @@ export async function llmRepairRegex(
   abortSignal?: AbortSignal
 ): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
   const client = getClient();
+  const start = Date.now();
+  const names = failures.map((f) => f.name).join(", ");
+  console.log(`[LLM] regex repair starting (${templateModel}) -- fixing: ${names}`);
 
   const failureDesc = failures.map((f) =>
     `- ${f.type} "${f.name}": expected "${f.expected}", got "${f.got}"\n  Text around value: ${JSON.stringify(f.context)}`
@@ -321,9 +340,14 @@ export async function llmRepairRegex(
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) return [];
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  if (!content) {
+    console.log(`[LLM] regex repair EMPTY response (${elapsed}s)`);
+    return [];
+  }
 
   const parsed = JSON.parse(content) as { repairs: Array<{ name: string; type: string; regex: string; group: number }> };
+  console.log(`[LLM] regex repair done (${elapsed}s) -- ${parsed.repairs.length} repairs`);
   return parsed.repairs;
 }
 
@@ -365,6 +389,8 @@ export async function llmFillIn(
 ): Promise<TemplateFillIn> {
   const client = getClient();
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
+  const start = Date.now();
+  console.log(`[LLM] fill-in starting (${EXTRACTION_MODEL}, ${snippet.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
@@ -383,7 +409,14 @@ export async function llmFillIn(
   );
 
   const content = response.choices[0]?.message?.content;
-  if (!content) return { orderNumber: null, orderDate: null, technicianName: null, trackingNumber: null, deliveryCourier: null, totalTax: null, totalShipping: null };
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  if (!content) {
+    console.log(`[LLM] fill-in EMPTY response (${elapsed}s)`);
+    return { orderNumber: null, orderDate: null, technicianName: null, trackingNumber: null, deliveryCourier: null, totalTax: null, totalShipping: null };
+  }
 
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+  const filled = Object.entries(parsed).filter(([, v]) => v != null).map(([k]) => k);
+  console.log(`[LLM] fill-in done (${elapsed}s) -- found: ${filled.join(", ") || "nothing"}`);
+  return parsed;
 }
