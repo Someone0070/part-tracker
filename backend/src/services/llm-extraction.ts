@@ -1,83 +1,49 @@
 import { redactForLlm, scrubHtmlForSelectors, parseHtmlWithSelectors } from "./html-parser.js";
 import { validateExtractionResult, savePreset } from "./vendor-presets.js";
-import type { DocumentResult } from "./document-parser.js";
+import { distributeAndNormalize } from "./document-parser.js";
+import type { DocumentResult, ExtractedItem } from "./document-parser.js";
 import type { HtmlSelectorConfig } from "./vendor-presets.js";
+import { llmExtract, isLlmConfigured, EXTRACTION_MODEL } from "./template-llm.js";
+import OpenAI from "openai";
 
-const ZAI_CHAT_URL = "https://api.z.ai/api/paas/v4/chat/completions";
-const MODEL = "glm-4-flash-250414";
-
-async function callLlm(systemPrompt: string, userPrompt: string): Promise<string | null> {
-  const apiKey = process.env.ZAI_API_KEY;
-  if (!apiKey) return null;
-
-  try {
-    const res = await fetch(ZAI_CHAT_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0,
-        max_tokens: 2000,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
-
-    if (!res.ok) return null;
-
-    const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    return content
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/```\s*$/, "")
-      .trim();
-  } catch {
-    return null;
-  }
-}
-
-// --- Step 1: LLM item extraction ---
+// --- Step 1: LLM item extraction (uses OpenAI nano, same as PDF path) ---
 
 export async function extractItemsViaLlm(html: string, vendorName: string): Promise<DocumentResult | null> {
+  if (!isLlmConfigured()) return null;
+
   const text = redactForLlm(html);
 
-  const raw = await callLlm(
-    "You extract purchase order line items from document text. Reply ONLY with valid JSON, no markdown.",
-    `Extract all purchased items from this document. Reply with JSON: {"vendor":"...","orderNumber":"...","orderDate":"...","technicianName":null,"trackingNumber":null,"deliveryCourier":null,"items":[{"partNumber":"...","partName":"...","quantity":1,"unitPrice":null,"shipCost":null,"taxPrice":null,"brand":null}]}. Use null for unknown fields.\n\nDocument text:\n${text}`
-  );
-
-  if (!raw) return null;
-
   try {
-    const parsed = JSON.parse(raw);
+    const extraction = await llmExtract(text);
+
+    const items: ExtractedItem[] = extraction.items.map((item) => ({
+      partNumber: item.partNumber,
+      partName: item.partName,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      shipCost: null,
+      taxPrice: null,
+      brand: item.brand,
+    }));
+
+    const tax = extraction.totalTax ?? 0;
+    const shipping = extraction.totalShipping ?? 0;
+    if ((tax > 0 || shipping > 0) && items.length > 0) {
+      distributeAndNormalize(items, shipping, tax);
+    }
+
     return {
-      vendor: typeof parsed.vendor === "string" ? parsed.vendor : vendorName,
-      orderNumber: typeof parsed.orderNumber === "string" ? parsed.orderNumber : null,
-      orderDate: typeof parsed.orderDate === "string" ? parsed.orderDate : null,
-      technicianName: typeof parsed.technicianName === "string" ? parsed.technicianName : null,
-      trackingNumber: typeof parsed.trackingNumber === "string" ? parsed.trackingNumber : null,
-      deliveryCourier: typeof parsed.deliveryCourier === "string" ? parsed.deliveryCourier : null,
-      items: Array.isArray(parsed.items)
-        ? parsed.items.map((item: Record<string, unknown>) => ({
-            partNumber: typeof item.partNumber === "string" ? item.partNumber : "",
-            partName: typeof item.partName === "string" ? item.partName : "",
-            quantity: typeof item.quantity === "number" ? item.quantity : 1,
-            unitPrice: typeof item.unitPrice === "number" ? item.unitPrice : null,
-            shipCost: typeof item.shipCost === "number" ? item.shipCost : null,
-            taxPrice: typeof item.taxPrice === "number" ? item.taxPrice : null,
-            brand: typeof item.brand === "string" ? item.brand : null,
-          }))
-        : [],
+      vendor: extraction.vendor || vendorName,
+      orderNumber: extraction.orderNumber,
+      orderDate: extraction.orderDate,
+      technicianName: extraction.technicianName,
+      trackingNumber: extraction.trackingNumber,
+      deliveryCourier: extraction.deliveryCourier,
+      items,
       rawText: text,
     };
-  } catch {
+  } catch (err) {
+    console.warn("[URL Import] LLM extraction failed:", err);
     return null;
   }
 }
@@ -112,8 +78,24 @@ HTML snippet:
 `;
 
 async function generateSelectors(html: string): Promise<HtmlSelectorConfig | null> {
+  if (!isLlmConfigured()) return null;
   const scrubbed = scrubHtmlForSelectors(html);
-  const raw = await callLlm(SELECTOR_SYSTEM_PROMPT, SELECTOR_USER_PROMPT + scrubbed);
+
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+  let raw: string | null = null;
+  try {
+    const response = await client.chat.completions.create({
+      model: EXTRACTION_MODEL,
+      temperature: 0,
+      messages: [
+        { role: "system", content: SELECTOR_SYSTEM_PROMPT },
+        { role: "user", content: SELECTOR_USER_PROMPT + scrubbed },
+      ],
+    });
+    raw = response.choices[0]?.message?.content?.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim() ?? null;
+  } catch {
+    return null;
+  }
   if (!raw) return null;
 
   try {
