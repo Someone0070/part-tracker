@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 # Build tools for native modules (re2, bcrypt)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,7 +13,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # Install Chromium, its dependencies, and build tools for native modules (re2, bcrypt)
 RUN apt-get update && apt-get install -y --no-install-recommends \
