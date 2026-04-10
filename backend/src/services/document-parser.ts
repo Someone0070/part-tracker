@@ -236,6 +236,57 @@ function fixSplitTracking(result: DocumentResult): void {
 }
 
 /**
+ * Sanitize extraction results -- catch obviously wrong values from weaker models.
+ */
+function sanitizeExtraction(result: DocumentResult): void {
+  // Tracking number validation: must be 10+ chars and look like a real tracking number
+  if (result.trackingNumber) {
+    const t = result.trackingNumber.trim();
+    const looksLikeTracking =
+      /^\d{10,}$/.test(t) ||                    // Pure numeric (USPS, FedEx Ground)
+      /^[A-Z]{2}\d{9}[A-Z]{2}$/.test(t) ||     // International (e.g. RR123456789CN)
+      /^1Z[A-Z0-9]{16}$/.test(t) ||             // UPS
+      /^\d{4}\s?\d{4}\s?\d{4}\s?\d{4}/.test(t); // Space-separated groups
+    if (!looksLikeTracking) {
+      console.log(`[Sanitize] rejected tracking "${t}" -- doesn't match known formats`);
+      result.trackingNumber = null;
+    }
+  }
+
+  // Tracking != part number or order number (weaker models confuse these)
+  if (result.trackingNumber) {
+    const t = result.trackingNumber.trim();
+    const partNumbers = new Set(result.items.map((i) => i.partNumber));
+    if (partNumbers.has(t) || t === result.orderNumber) {
+      console.log(`[Sanitize] rejected tracking "${t}" -- same as part/order number`);
+      result.trackingNumber = null;
+    }
+  }
+
+  // Courier validation: must be a known carrier or service, not random words
+  if (result.deliveryCourier) {
+    const c = result.deliveryCourier.trim().toLowerCase();
+    const badCouriers = ["shipped", "pending", "processing", "completed", "paid", "n/a", "none", "visa", "cash"];
+    if (badCouriers.includes(c) || c.length < 2) {
+      console.log(`[Sanitize] rejected courier "${result.deliveryCourier}" -- not a real carrier`);
+      result.deliveryCourier = null;
+    }
+  }
+
+  // Brand validation: reject if it's clearly part of a description suffix
+  for (const item of result.items) {
+    if (item.brand) {
+      const b = item.brand.trim();
+      const badBrands = ["svce", "service", "assy", "assembly", "kit", "oem", "new", "used", "repl"];
+      if (badBrands.includes(b.toLowerCase()) || b.length < 2) {
+        console.log(`[Sanitize] rejected brand "${b}" -- looks like description fragment`);
+        item.brand = null;
+      }
+    }
+  }
+}
+
+/**
  * Try to recover tax/shipping from raw text when the LLM returns 0.
  * Scans for known summary labels near dollar amounts in the text.
  */
@@ -463,6 +514,7 @@ export async function parseDocument(
         // Items good -- fill metadata from nano
         await fillMetadata(extracted, text, onStep, abortSignal);
         fixSplitTracking(extracted);
+        sanitizeExtraction(extracted);
 
         incrementSuccess(tpl.id).catch(() => {});
 
@@ -550,6 +602,7 @@ async function llmExtractOnly(
     rawText: text,
   };
   fixSplitTracking(docResult);
+  sanitizeExtraction(docResult);
 
   onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
@@ -599,6 +652,7 @@ async function llmPath(
     rawText: text,
   };
   fixSplitTracking(docResult);
+  sanitizeExtraction(docResult);
 
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
 
