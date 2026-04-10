@@ -185,7 +185,7 @@ const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document 
 - For totalShipping, account for shipping discounts/credits (e.g. "Shipping: $2.99" + "Free Shipping: -$2.99" = totalShipping 0)
 - For quantity, look carefully at the document -- some formats put quantity in unexpected columns. "1 of:" means quantity 1
 - unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
-- technicianName is the recipient/buyer -- look for "Ship to", "Deliver to", "Sold to", "Recipient", "Buyer", "Customer" etc.
+- technicianName is the SHIPPING RECIPIENT (the person the package is shipped to). Look for the name under "Ship to", "Shipping address", "Deliver to", "Recipient". This is NOT the buyer username or account name -- it's the physical person receiving the package.
 - For Amazon invoices, items start with "N of:" where N is the quantity. Extract the product name after "of:"
 - partNumber should be an actual product/part identifier, NOT an order number`;
 
@@ -407,7 +407,7 @@ export async function llmFillIn(
       model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract order metadata from this invoice: order number, order date, recipient name (Ship to / Deliver to / Sold to / Buyer / Customer name), tracking number, delivery courier, total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). deliveryCourier is the shipping service (USPS, UPS, FedEx, Amazon/Prime, eBay Economy, etc). Return null for anything not found." },
+        { role: "system", content: "Extract order metadata from this invoice: order number, order date, shipping recipient name (the person the package is shipped to -- look under 'Ship to' or 'Shipping address', NOT the buyer username or account name), tracking number, delivery courier (USPS, UPS, FedEx, Amazon/Prime, etc), total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). Return null for anything not found." },
         { role: "user", content: snippet },
       ],
       response_format: {

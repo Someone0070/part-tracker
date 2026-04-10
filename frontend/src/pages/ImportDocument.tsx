@@ -54,13 +54,12 @@ function Row({ label, value }: { label: string; value: string | null | undefined
 }
 
 type ExtractionMode = "llm" | "template" | "template+";
-type ExtractionModel = "gpt-5.4-nano" | "gpt-5-nano" | "gpt-4.1-nano" | "gpt-5.4-nano-batch";
+type ExtractionModel = "gpt-5.4-nano" | "gpt-5-nano" | "gpt-4.1-nano";
 
 const MODELS: Array<{ id: ExtractionModel; label: string; cost: string }> = [
   { id: "gpt-5-nano", label: "GPT-5 Nano", cost: "~$0.0003" },
   { id: "gpt-4.1-nano", label: "GPT-4.1 Nano", cost: "~$0.0004" },
   { id: "gpt-5.4-nano", label: "GPT-5.4 Nano", cost: "~$0.001" },
-  { id: "gpt-5.4-nano-batch", label: "GPT-5.4 Nano Batch", cost: "~$0.0005" },
 ];
 
 const MODES: Array<{ id: ExtractionMode; label: string; desc: string }> = [
