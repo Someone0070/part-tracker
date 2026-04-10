@@ -261,21 +261,60 @@ async function llmPath(
     rawText: text,
   };
 
-  // Build column hint from first item's line in the text
-  let columnHint = "";
+  // Build layout hints by locating each extracted value in the text
+  const layoutHints: string[] = [];
+  const lines = text.split("\n");
+
+  // Item column layout
   if (extraction.items.length > 0) {
     const firstItem = extraction.items[0];
-    const itemLine = text.split("\n").find((line) =>
-      line.includes(firstItem.partNumber)
-    );
+    const itemLine = lines.find((line) => line.includes(firstItem.partNumber));
     if (itemLine && itemLine.includes("\t")) {
       const cols = itemLine.split("\t");
       const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
       if (pnIdx >= 0) {
-        columnHint = `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
+        layoutHints.push(`ITEM ROW: ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\n  Columns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`);
       }
     }
   }
+
+  // Field locations (order number, date, tracking, etc.)
+  const fieldLocations: Record<string, string | null> = {
+    orderNumber: extraction.orderNumber,
+    orderDate: extraction.orderDate,
+    technicianName: extraction.technicianName,
+    trackingNumber: extraction.trackingNumber,
+    deliveryCourier: extraction.deliveryCourier,
+  };
+  for (const [name, value] of Object.entries(fieldLocations)) {
+    if (!value) continue;
+    const lineIdx = lines.findIndex((l) => l.includes(value));
+    if (lineIdx < 0) continue;
+    const line = lines[lineIdx];
+    const charIdx = line.indexOf(value);
+    // Show the line with surrounding context
+    const before = line.slice(Math.max(0, charIdx - 30), charIdx);
+    const after = line.slice(charIdx + value.length, charIdx + value.length + 30);
+    layoutHints.push(`${name}: "${value}" found on line ${lineIdx + 1}, preceded by "${before.trim()}", followed by "${after.trim()}"`);
+  }
+
+  // Total locations
+  if (extraction.totalTax != null) {
+    const taxStr = String(extraction.totalTax);
+    const lineIdx = lines.findIndex((l) => l.includes(taxStr));
+    if (lineIdx >= 0) {
+      layoutHints.push(`totalTax: ${taxStr} found on line ${lineIdx + 1}: "${lines[lineIdx].trim()}"`);
+    }
+  }
+  if (extraction.totalShipping != null) {
+    const shipStr = String(extraction.totalShipping);
+    const lineIdx = lines.findIndex((l) => l.includes(shipStr));
+    if (lineIdx >= 0) {
+      layoutHints.push(`totalShipping: ${shipStr} found on line ${lineIdx + 1}: "${lines[lineIdx].trim()}"`);
+    }
+  }
+
+  const columnHint = layoutHints.length > 0 ? layoutHints.join("\n") : "";
 
   onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
   try {
