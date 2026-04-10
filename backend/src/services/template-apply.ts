@@ -42,11 +42,41 @@ export function safeMatch(text: string, pattern: string, flags = ""): RegExpMatc
  * Apply a template to extract line items only.
  * Metadata (order number, dates, tracking, totals) always comes from nano fill-in.
  */
+function extractRows(tableText: string, rowPattern: string): ExtractedItem[] {
+  const items: ExtractedItem[] = [];
+  try {
+    const rowRe = new RE2(rowPattern, "g");
+    let match;
+    while ((match = rowRe.exec(tableText)) !== null) {
+      const g = match.groups as Record<string, string> | undefined;
+      if (!g) continue;
+      if (/payment/i.test(match[0])) continue;
+
+      items.push({
+        partNumber: g["partNumber"]?.trim() ?? "",
+        partName: (g["description"] ?? g["partName"] ?? "").trim(),
+        quantity: parseInt(g["quantity"]) || 1,
+        unitPrice: g["unitPrice"] ? parseFloat(g["unitPrice"]) : null,
+        shipCost: null,
+        taxPrice: null,
+        brand: g["brand"]?.trim() ?? null,
+      });
+    }
+  } catch {
+    // Invalid row pattern
+  }
+  return items;
+}
+
+/**
+ * Apply a template to extract line items only.
+ * Metadata (order number, dates, tracking, totals) always comes from nano fill-in.
+ */
 export function applyTemplate(
   text: string,
   rules: ExtractionRules
 ): DocumentResult {
-  const items: ExtractedItem[] = [];
+  let items: ExtractedItem[] = [];
   const startMatch = safeMatch(text, rules.lineItems.start, "i");
 
   if (startMatch && startMatch.index != null) {
@@ -56,27 +86,17 @@ export function applyTemplate(
       ? afterStart.slice(0, endMatch.index)
       : afterStart;
 
-    try {
-      const rowRe = new RE2(rules.lineItems.row, "g");
-      let match;
-      while ((match = rowRe.exec(tableText)) !== null) {
-        const g = match.groups as Record<string, string> | undefined;
-        if (!g) continue;
-        if (/payment/i.test(match[0])) continue;
+    items = extractRows(tableText, rules.lineItems.row);
 
-        items.push({
-          partNumber: g["partNumber"]?.trim() ?? "",
-          partName: (g["description"] ?? g["partName"] ?? "").trim(),
-          quantity: parseInt(g["quantity"]) || 1,
-          unitPrice: g["unitPrice"] ? parseFloat(g["unitPrice"]) : null,
-          shipCost: null,
-          taxPrice: null,
-          brand: g["brand"]?.trim() ?? null,
-        });
-      }
-    } catch {
-      // Invalid row pattern -- return 0 items (triggers LLM fallback)
+    // Reversed layout fallback: if start/end matched but the table region
+    // was too small or yielded 0 items, try searching the full document.
+    // Some PDFs (e.g. Encompass) have items BEFORE the header in extracted text.
+    if (items.length === 0 && tableText.length < 100) {
+      items = extractRows(text, rules.lineItems.row);
     }
+  } else {
+    // No start match -- try row regex on full text as last resort
+    items = extractRows(text, rules.lineItems.row);
   }
 
   return {
