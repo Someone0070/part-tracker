@@ -187,7 +187,8 @@ const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document 
 - unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
 - technicianName is the SHIPPING RECIPIENT (the person the package is shipped to). Look for the name under "Ship to", "Shipping address", "Deliver to", "Recipient". This is NOT the buyer username or account name -- it's the physical person receiving the package.
 - For Amazon invoices, items start with "N of:" where N is the quantity. Extract the product name after "of:"
-- partNumber should be an actual product/part identifier, NOT an order number`;
+- partNumber should be an actual product/part identifier, NOT an order number
+- ALL fields are required. Search the entire document thoroughly before returning null`;
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex patterns to extract LINE ITEMS from invoices. You only need to handle item rows -- metadata (order number, dates, tracking, totals) is handled separately.
 
@@ -407,7 +408,7 @@ export async function llmFillIn(
       model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract order metadata from this invoice: order number, order date, shipping recipient name (the person the package is shipped to -- look under 'Ship to' or 'Shipping address', NOT the buyer username or account name), tracking number, delivery courier (USPS, UPS, FedEx, Amazon/Prime, etc), total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). Return null for anything not found." },
+        { role: "system", content: "Extract ALL order metadata from this invoice. Every field is REQUIRED -- search the entire document thoroughly before returning null.\n\n- orderNumber: the order/invoice number\n- orderDate: when the order was placed\n- technicianName: the SHIPPING RECIPIENT (person under 'Ship to' / 'Shipping address' / 'Deliver to'), NOT the buyer username or account name\n- trackingNumber: package tracking number\n- deliveryCourier: the actual delivery carrier (USPS, UPS, FedEx, DHL, etc). If only a service level is shown (e.g. 'eBay Economy', 'Prime'), use that\n- totalTax: total tax amount\n- totalShipping: total shipping cost (account for discounts: Shipping $2.99 + Free Shipping -$2.99 = 0)\n\nOnly return null if the information truly does not exist anywhere in the document." },
         { role: "user", content: snippet },
       ],
       response_format: {
