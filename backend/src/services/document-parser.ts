@@ -143,30 +143,39 @@ async function ocrExtractText(pdfBase64: string, abortSignal?: AbortSignal): Pro
     }
 
     const data = (await res.json()) as {
-      content?: string;
-      text?: string;
       md_results?: string;
-      layout_details?: Array<{ content?: string }>;
+      layout_details?: Array<Array<{ content?: string; label?: string }>> | Array<{ content?: string; label?: string }>;
     };
 
-    const rawOcr =
-      data.md_results ??
-      data.content ??
-      data.text ??
-      data.layout_details?.map((d) => d.content ?? "").join("\n") ??
-      "";
+    // layout_details is nested: pages -> elements. Flatten to get all text.
+    let detailsText = "";
+    if (data.layout_details && Array.isArray(data.layout_details)) {
+      const flat = data.layout_details.flat();
+      detailsText = flat.map((d: { content?: string }) => d.content ?? "").join("\n");
+    }
 
-    if (rawOcr.length < 20) return null;
+    // Prefer md_results (markdown), fall back to layout_details (plain text from regions)
+    const rawOcr = data.md_results || detailsText || "";
+
+    // Log what we got for debugging
+    console.log(`[OCR] response: md_results=${data.md_results?.length ?? 0} chars, layout_details=${detailsText.length} chars`);
+    if (detailsText.length > rawOcr.length) {
+      console.log(`[OCR] layout_details has MORE content than md_results, using it`);
+    }
+
+    // Use whichever is more complete
+    const bestText = detailsText.length > rawOcr.length ? detailsText : rawOcr;
+    if (bestText.length < 20) return null;
 
     // Strip HTML tags and markdown artifacts -- nano can't parse markup
-    const cleaned = rawOcr
+    const cleaned = bestText
       .replace(/<[^>]+>/g, " ")       // HTML tags → space
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
       .replace(/^#+\s*/gm, "")        // markdown headings
       .replace(/\[.*?\]\(.*?\)/g, "") // markdown links
-      .replace(/\s{2,}/g, " ")        // collapse whitespace
+      .replace(/[ \t]{2,}/g, " ")     // collapse horizontal whitespace (preserve newlines)
       .trim();
 
     return cleaned.length < 20 ? null : cleaned;
