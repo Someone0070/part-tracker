@@ -1,8 +1,8 @@
 import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
-import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
-import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, isEscalationConfigured, ESCALATION_MODEL } from "./template-llm.js";
+import { applyTemplate, distributeAndNormalize } from "./template-apply.js";
+import { validateTemplate } from "./template-validate.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRowRegex, isLlmConfigured, isEscalationConfigured, ESCALATION_MODEL } from "./template-llm.js";
 import { checkExtraction } from "./extraction-sanity.js";
 import {
   loadAllTemplates,
@@ -66,13 +66,10 @@ const MAX_LLM_TEXT = 10_000;
 
 /**
  * Fix tracking numbers that got split across PDF lines.
- * If the tracking number appears in the raw text and the next line
- * is a short numeric continuation (1-3 digits), concatenate them.
  */
 function fixSplitTracking(result: DocumentResult): void {
   if (!result.trackingNumber || !result.rawText) return;
   const tracking = result.trackingNumber;
-  // Only fix numeric tracking numbers
   if (!/^\d{8,}$/.test(tracking)) return;
 
   const lines = result.rawText.split("\n");
@@ -80,9 +77,39 @@ function fixSplitTracking(result: DocumentResult): void {
   if (idx < 0 || idx + 1 >= lines.length) return;
 
   const nextLine = lines[idx + 1].trim();
-  // Short numeric continuation (1-3 digits, nothing else on the line)
   if (/^\d{1,3}$/.test(nextLine)) {
     result.trackingNumber = tracking + nextLine;
+  }
+}
+
+/**
+ * Fill in metadata + totals from nano, then distribute tax/shipping to items.
+ */
+async function fillMetadata(
+  result: DocumentResult,
+  text: string,
+  onStep: StepCallback,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  if (!isLlmConfigured()) return;
+
+  onStep("filling_metadata", "Filling metadata with gpt-5.4-nano...");
+  try {
+    const fill = await llmFillIn(text, abortSignal);
+
+    result.orderNumber = fill.orderNumber;
+    result.orderDate = fill.orderDate;
+    result.technicianName = fill.technicianName;
+    result.trackingNumber = fill.trackingNumber;
+    result.deliveryCourier = fill.deliveryCourier;
+
+    const tax = fill.totalTax ?? 0;
+    const shipping = fill.totalShipping ?? 0;
+    if ((tax > 0 || shipping > 0) && result.items.length > 0) {
+      distributeAndNormalize(result.items, shipping, tax);
+    }
+  } catch {
+    // Non-critical -- items still extracted
   }
 }
 
@@ -111,8 +138,7 @@ export async function parseDocument(
   if (matched) {
     const tpl = matched.template;
     const usable = hasUsableRules(tpl);
-    const isUnreliable =
-      tpl.failCount > 3 && tpl.successCount < tpl.failCount;
+    const isUnreliable = tpl.failCount > 3 && tpl.successCount < tpl.failCount;
 
     if (usable && !isUnreliable) {
       onStep("vendor_matched", `Vendor matched: ${tpl.vendorName}`);
@@ -121,63 +147,18 @@ export async function parseDocument(
       const extracted = applyTemplate(text, tpl.extractionRules);
 
       if (extracted.items.length > 0) {
-        const hasShip = extracted.items.some((i) => (i.shipCost ?? 0) > 0);
-        const hasTax = extracted.items.some((i) => (i.taxPrice ?? 0) > 0);
-        const missingTotals = !hasShip || !hasTax;
-        const missing: string[] = [];
-        if (!hasShip) missing.push("shipping");
-        if (!hasTax) missing.push("tax");
-        if (!extracted.orderNumber) missing.push("order #");
-        if (!extracted.orderDate) missing.push("date");
-        if (!extracted.technicianName) missing.push("technician");
-        if (!extracted.trackingNumber) missing.push("tracking");
-        if (!extracted.deliveryCourier) missing.push("courier");
-
-        if (missing.length > 0 && isLlmConfigured()) {
-          onStep("filling_metadata", `LLM filling: ${missing.join(", ")}`);
-          try {
-            const fill = await llmFillIn(text, abortSignal);
-            if (missingTotals) {
-              const curTax = hasTax ? extracted.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0) : 0;
-              const curShip = hasShip ? extracted.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0) : 0;
-              const tax = hasTax ? curTax : (fill.totalTax ?? 0);
-              const shipping = hasShip ? curShip : (fill.totalShipping ?? 0);
-              if (tax > 0 || shipping > 0) {
-                distributeAndNormalize(extracted.items, shipping, tax);
-              }
-            }
-            if (!extracted.orderNumber && fill.orderNumber) extracted.orderNumber = fill.orderNumber;
-            if (!extracted.orderDate && fill.orderDate) extracted.orderDate = fill.orderDate;
-            if (!extracted.technicianName && fill.technicianName) extracted.technicianName = fill.technicianName;
-            if (!extracted.trackingNumber && fill.trackingNumber) extracted.trackingNumber = fill.trackingNumber;
-            if (!extracted.deliveryCourier && fill.deliveryCourier) extracted.deliveryCourier = fill.deliveryCourier;
-          } catch {
-            // Non-critical
-          }
-        }
-
-        // Sanity check: do the numbers make sense?
+        // Sanity check items
         const sanity = checkExtraction(extracted);
         if (!sanity.pass) {
-          console.warn(`Template sanity check FAILED (score=${sanity.score}):`, sanity.failures);
-          onStep("sanity_failed", `Template data looks wrong (${sanity.failures[0]}). Repairing...`);
+          console.warn(`Template sanity FAILED (score=${sanity.score}):`, sanity.failures);
+          onStep("sanity_failed", `Template data looks wrong. Falling back to LLM...`);
           incrementFail(tpl.id).catch(() => {});
-
-          // Background repair: use nano to get correct values, then fix the template
-          if (isLlmConfigured()) {
-            repairTemplateFromSanity(text, tpl.id, tpl.extractionRules, sanity.failures, abortSignal).catch(() => {});
-          }
-
           return llmExtractOnly(text, onStep, abortSignal);
         }
 
-        if (sanity.failures.length > 0) {
-          console.warn(`Template sanity warnings (score=${sanity.score}):`, sanity.failures);
-          // Warnings present but passed -- still trigger background repair to fix minor issues
-          if (isLlmConfigured()) {
-            repairTemplateFromSanity(text, tpl.id, tpl.extractionRules, sanity.failures, abortSignal).catch(() => {});
-          }
-        }
+        // Items good -- fill metadata from nano
+        await fillMetadata(extracted, text, onStep, abortSignal);
+        fixSplitTracking(extracted);
 
         incrementSuccess(tpl.id).catch(() => {});
 
@@ -185,7 +166,6 @@ export async function parseDocument(
           verifyTemplateInBackground(text, extracted, tpl.id);
         }
 
-        fixSplitTracking(extracted);
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
       }
@@ -206,7 +186,7 @@ export async function parseDocument(
         const daysLeft = Math.ceil(
           (7 * 24 * 60 * 60 * 1000 - (Date.now() - tpl.lastGenerationAttempt!.getTime())) / (24 * 60 * 60 * 1000)
         );
-        onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d. Using LLM extraction only...`);
+        onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d.`);
         return llmExtractOnly(text, onStep, abortSignal);
       }
       onStep("template_retry", `Retrying template generation for ${tpl.vendorName}...`);
@@ -221,6 +201,9 @@ export async function parseDocument(
   return llmPath(text, onStep, abortSignal);
 }
 
+/**
+ * LLM extraction only -- no template generation.
+ */
 async function llmExtractOnly(
   text: string,
   onStep: StepCallback,
@@ -251,7 +234,7 @@ async function llmExtractOnly(
     distributeAndNormalize(items, shipping, tax);
   }
 
-  const result: DocumentResult = {
+  const docResult: DocumentResult = {
     vendor: extraction.vendor,
     orderNumber: extraction.orderNumber,
     orderDate: extraction.orderDate,
@@ -261,10 +244,10 @@ async function llmExtractOnly(
     items,
     rawText: text,
   };
-  fixSplitTracking(result);
+  fixSplitTracking(docResult);
 
-  onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted (LLM only)`);
-  return result;
+  onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted`);
+  return docResult;
 }
 
 async function llmPath(
@@ -278,8 +261,8 @@ async function llmPath(
   }
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
+  // Step 1: Extract everything with nano
   onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
-
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
   const extraction = await llmExtract(llmText, abortSignal);
 
@@ -309,150 +292,81 @@ async function llmPath(
     items,
     rawText: text,
   };
+  fixSplitTracking(docResult);
 
-  // Build layout hints by locating each extracted value in the text
-  const layoutHints: string[] = [];
-  const lines = text.split("\n");
-
-  // Item column layout
+  // Step 2: Build column hint for template generation
+  let columnHint = "";
   if (extraction.items.length > 0) {
     const firstItem = extraction.items[0];
-    const itemLine = lines.find((line) => line.includes(firstItem.partNumber));
+    const itemLine = text.split("\n").find((line) => line.includes(firstItem.partNumber));
     if (itemLine && itemLine.includes("\t")) {
       const cols = itemLine.split("\t");
       const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
       if (pnIdx >= 0) {
-        layoutHints.push(`ITEM ROW: ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\n  Columns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`);
+        columnHint = `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
       }
     }
   }
 
-  // Field locations (order number, date, tracking, etc.)
-  const fieldLocations: Record<string, string | null> = {
-    orderNumber: extraction.orderNumber,
-    orderDate: extraction.orderDate,
-    technicianName: extraction.technicianName,
-    trackingNumber: extraction.trackingNumber,
-    deliveryCourier: extraction.deliveryCourier,
-  };
-  for (const [name, value] of Object.entries(fieldLocations)) {
-    if (!value) continue;
-    const lineIdx = lines.findIndex((l) => l.includes(value));
-    if (lineIdx < 0) continue;
-    const line = lines[lineIdx];
-    const charIdx = line.indexOf(value);
-    // Show the line with surrounding context
-    const before = line.slice(Math.max(0, charIdx - 30), charIdx);
-    const after = line.slice(charIdx + value.length, charIdx + value.length + 30);
-    layoutHints.push(`${name}: "${value}" found on line ${lineIdx + 1}, preceded by "${before.trim()}", followed by "${after.trim()}"`);
-  }
-
-  // Total locations
-  if (extraction.totalTax != null) {
-    const taxStr = String(extraction.totalTax);
-    const lineIdx = lines.findIndex((l) => l.includes(taxStr));
-    if (lineIdx >= 0) {
-      layoutHints.push(`totalTax: ${taxStr} found on line ${lineIdx + 1}: "${lines[lineIdx].trim()}"`);
-    }
-  }
-  if (extraction.totalShipping != null) {
-    const shipStr = String(extraction.totalShipping);
-    const lineIdx = lines.findIndex((l) => l.includes(shipStr));
-    if (lineIdx >= 0) {
-      layoutHints.push(`totalShipping: ${shipStr} found on line ${lineIdx + 1}: "${lines[lineIdx].trim()}"`);
-    }
-  }
-
-  const columnHint = layoutHints.length > 0 ? layoutHints.join("\n") : "";
-
+  // Step 3: Generate item-only template with mini
   onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
   try {
     const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal, undefined, columnHint);
 
     let saved = false;
     for (let attempt = 0; attempt < 2 && !saved; attempt++) {
-      onStep("validating_template", attempt === 0 ? "Validating generated template..." : "Re-validating after repair...");
+      onStep("validating_template", attempt === 0 ? "Validating template..." : "Re-validating after repair...");
       const validation = validateTemplate(text, templateRules, extraction);
 
       if (validation.valid) {
-        const failures = findFieldFailures(text, templateRules, extraction);
-        if (failures.length > 0) {
-          onStep("repairing_template", `Repairing ${failures.length} pattern${failures.length > 1 ? "s" : ""}...`);
-          await applyRepairs(text, templateRules, failures, abortSignal);
-        }
-
-        const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
-        templateRules.totals = templateRules.totals.filter((t) => {
-          const m = safeMatch(text, t.regex, "s");
-          const val = m?.[1] ? parseFloat(m[1]) : 0;
-          const llmVal = t.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
-          return !(val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1));
-        });
-
         await upsertTemplate(templateRules, existingTemplateId);
-        onStep("template_stored", "Template learned and stored. Future invoices from this vendor will be instant.");
+        onStep("template_stored", "Template learned. Future invoices from this vendor will be faster.");
         saved = true;
       } else if (attempt === 0) {
         console.warn("Template validation failed:", validation.reason);
-        onStep("repairing_template", "Template failed validation. Attempting repair...");
+        onStep("repairing_template", "Template failed validation. Repairing...");
 
-        const itemFailure = validation.reason?.includes("items") || validation.reason?.includes("partNumber");
-        if (itemFailure && extraction.items.length > 0) {
+        // Try to repair the row regex
+        if (extraction.items.length > 0) {
           const firstItem = extraction.items[0];
           const itemContext = text.split("\n").find((line) =>
-            line.includes(firstItem.partNumber) || (firstItem.partName && line.includes(firstItem.partName.split(" ")[0]))
+            line.includes(firstItem.partNumber)
           ) ?? "";
 
-          // Annotate the columns so the model knows the actual field order
-          let columnAnnotation = "";
+          let annotation = "";
           if (itemContext.includes("\t")) {
             const cols = itemContext.split("\t");
             const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
             if (pnIdx >= 0) {
-              columnAnnotation = `\n\nThe line has ${cols.length} tab-separated columns. Column ${pnIdx + 1} contains the part number "${firstItem.partNumber}". The actual column values are:\n${cols.map((c, i) => `  col${i + 1}: "${c.trim()}"`).join("\n")}`;
+              annotation = `\nColumn layout: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
             }
           }
 
-          const repairs = await llmRepairRegex([{
-            name: "row",
-            type: "field" as const,
+          const fixedRow = await llmRepairRowRegex({
             expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
-            got: "(0 items matched)",
-            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nIMPORTANT: The row regex MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...). Do NOT use positional groups.\n\nExample item line from text:\n${itemContext}${columnAnnotation}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
-          }], abortSignal);
+            got: validation.reason ?? "0 items matched",
+            context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
+          }, abortSignal);
 
-          for (const repair of repairs) {
-            if (repair.name === "row") {
-              templateRules.lineItems.row = repair.regex;
-            }
+          if (fixedRow) {
+            templateRules.lineItems.row = fixedRow;
           }
         }
       } else {
-        console.warn("Template repair failed after retry:", validation.reason);
+        console.warn("Template repair failed:", validation.reason);
         onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
       }
     }
 
-    // Escalation: if mini failed, try once with Gemini 2.5 Flash
+    // Escalation: if mini failed, try Gemini
     if (!saved && isEscalationConfigured()) {
       onStep("escalating_template", "Escalating to Gemini 2.5 Flash...");
       try {
         const escalatedRules = await llmGenerateTemplate(llmText, extraction, abortSignal, ESCALATION_MODEL, columnHint);
         const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
         if (escalatedValidation.valid) {
-          const failures = findFieldFailures(text, escalatedRules, extraction);
-          if (failures.length > 0) {
-            await applyRepairs(text, escalatedRules, failures, abortSignal);
-          }
-          const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
-          escalatedRules.totals = escalatedRules.totals.filter((t) => {
-            const m = safeMatch(text, t.regex, "s");
-            const val = m?.[1] ? parseFloat(m[1]) : 0;
-            const llmVal = t.name === "tax" ? (extraction.totalTax ?? 0) : (extraction.totalShipping ?? 0);
-            return !(val > subtotal || (llmVal > 0 && Math.abs(val - llmVal) > 1));
-          });
           await upsertTemplate(escalatedRules, existingTemplateId);
-          onStep("template_stored", "Template learned via Gemini escalation. Future invoices will be instant.");
+          onStep("template_stored", "Template learned via Gemini. Future invoices will be faster.");
           saved = true;
         } else {
           console.warn("Escalated template also failed:", escalatedValidation.reason);
@@ -471,154 +385,8 @@ async function llmPath(
     recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
   }
 
-  fixSplitTracking(docResult);
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
-}
-
-async function applyRepairs(
-  text: string,
-  rules: ExtractionRules,
-  failures: FieldFailure[],
-  abortSignal?: AbortSignal
-): Promise<void> {
-  try {
-    const repairs = await llmRepairRegex(failures, abortSignal);
-    for (const repair of repairs) {
-      const m = safeMatch(text, repair.regex, "s");
-      if (!m?.[repair.group]) continue;
-
-      if (repair.type === "field") {
-        const idx = rules.fields.findIndex((f) => f.name === repair.name);
-        const rule = { name: repair.name, regex: repair.regex, group: repair.group };
-        if (idx >= 0) rules.fields[idx] = rule;
-        else rules.fields.push(rule);
-      } else if (repair.type === "total") {
-        const idx = rules.totals.findIndex((t) => t.name === repair.name);
-        const rule = { name: repair.name, regex: repair.regex };
-        if (idx >= 0) rules.totals[idx] = rule;
-        else rules.totals.push(rule);
-      }
-    }
-  } catch {
-    console.warn("Template repair failed");
-  }
-}
-
-/**
- * Fire-and-forget: when sanity checks fail, get correct values from nano
- * and send the diff to the repair loop to fix the template regex.
- */
-async function repairTemplateFromSanity(
-  text: string,
-  templateId: number,
-  rules: ExtractionRules,
-  sanityFailures: string[],
-  abortSignal?: AbortSignal
-): Promise<void> {
-  try {
-    const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-    const correct = await llmExtract(llmText, abortSignal);
-    if (correct.items.length === 0) return;
-
-    // Apply the template to get what it currently extracts
-    const templateResult = applyTemplate(text, rules);
-
-    // Build repair targets from the diff between template and correct extraction
-    const repairFailures: FieldFailure[] = [];
-    const firstCorrect = correct.items[0];
-    const firstTemplate = templateResult.items[0];
-
-    // Part number wrong or missing
-    if (!firstTemplate || firstTemplate.partNumber !== firstCorrect.partNumber) {
-      const itemLine = text.split("\n").find((l) => l.includes(firstCorrect.partNumber)) ?? "";
-      repairFailures.push({
-        name: "row",
-        type: "field",
-        expected: `partNumber=${firstCorrect.partNumber}, quantity=${firstCorrect.quantity}, unitPrice=${firstCorrect.unitPrice}`,
-        got: firstTemplate ? `partNumber=${firstTemplate.partNumber}` : "(no match)",
-        context: `Row regex: ${rules.lineItems.row}\nCorrect item line: ${itemLine}`,
-      });
-    }
-
-    // Price wrong
-    if (firstTemplate && firstCorrect.unitPrice != null &&
-        firstTemplate.unitPrice != null &&
-        Math.abs(firstTemplate.unitPrice - firstCorrect.unitPrice) > 0.01) {
-      repairFailures.push({
-        name: "row",
-        type: "field",
-        expected: `unitPrice=${firstCorrect.unitPrice}`,
-        got: `unitPrice=${firstTemplate.unitPrice}`,
-        context: `Row regex: ${rules.lineItems.row}\nThe regex is grabbing the wrong column for unitPrice.`,
-      });
-    }
-
-    // Field-level repairs (order number, tracking, etc.)
-    const fieldChecks: Array<{ name: string; correct: string | null; templateVal: string | null }> = [
-      { name: "orderNumber", correct: correct.orderNumber, templateVal: templateResult.orderNumber },
-      { name: "trackingNumber", correct: correct.trackingNumber, templateVal: templateResult.trackingNumber },
-      { name: "orderDate", correct: correct.orderDate, templateVal: templateResult.orderDate },
-    ];
-    for (const { name, correct: cv, templateVal } of fieldChecks) {
-      if (cv && cv !== templateVal) {
-        const line = text.split("\n").find((l) => l.includes(cv)) ?? "";
-        repairFailures.push({
-          name,
-          type: "field",
-          expected: cv,
-          got: templateVal ?? "(no match)",
-          context: line,
-        });
-      }
-    }
-
-    // Totals: compare tax/shipping from nano vs template
-    const templateTax = templateResult.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0);
-    const templateShip = templateResult.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0);
-    if (correct.totalTax != null && Math.abs((correct.totalTax ?? 0) - templateTax) > 0.5) {
-      const taxStr = String(correct.totalTax);
-      const line = text.split("\n").find((l) => l.includes(taxStr)) ?? "";
-      repairFailures.push({
-        name: "tax",
-        type: "total",
-        expected: taxStr,
-        got: String(templateTax),
-        context: line,
-      });
-    }
-    if (correct.totalShipping != null && Math.abs((correct.totalShipping ?? 0) - templateShip) > 0.5) {
-      const shipStr = String(correct.totalShipping);
-      const line = text.split("\n").find((l) => l.includes(shipStr)) ?? "";
-      repairFailures.push({
-        name: "shipping",
-        type: "total",
-        expected: shipStr,
-        got: String(templateShip),
-        context: line,
-      });
-    }
-
-    if (repairFailures.length === 0) return;
-
-    console.log(`[Sanity repair] Attempting to fix ${repairFailures.length} issues for template ${templateId}`);
-    await applyRepairs(text, rules, repairFailures, abortSignal);
-
-    // Re-validate after repairs
-    const recheck = applyTemplate(text, rules);
-    if (recheck.items.length > 0) {
-      const { checkExtraction } = await import("./extraction-sanity.js");
-      const recheckSanity = checkExtraction(recheck);
-      if (recheckSanity.pass) {
-        await upsertTemplate(rules, templateId);
-        console.log(`[Sanity repair] Template ${templateId} repaired successfully`);
-      } else {
-        console.warn(`[Sanity repair] Repaired template still fails sanity:`, recheckSanity.failures);
-      }
-    }
-  } catch (err) {
-    console.warn("[Sanity repair] Failed:", err);
-  }
 }
 
 function verifyTemplateInBackground(

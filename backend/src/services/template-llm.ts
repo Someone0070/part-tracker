@@ -21,11 +21,6 @@ export interface LlmExtraction {
   items: LlmExtractionItem[];
 }
 
-export interface LlmResult {
-  extraction: LlmExtraction;
-  template: ExtractionRules;
-}
-
 // --- Models ---
 
 export const EXTRACTION_MODEL = "gpt-5.4-nano";
@@ -122,19 +117,6 @@ const TEMPLATE_SCHEMA = {
         required: ["domains", "keywords"],
         additionalProperties: false,
       },
-      fields: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            regex: { type: "string" },
-            group: { type: "number" },
-          },
-          required: ["name", "regex", "group"],
-          additionalProperties: false,
-        },
-      },
       lineItems: {
         type: "object",
         properties: {
@@ -145,20 +127,8 @@ const TEMPLATE_SCHEMA = {
         required: ["start", "end", "row"],
         additionalProperties: false,
       },
-      totals: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string" },
-            regex: { type: "string" },
-          },
-          required: ["name", "regex"],
-          additionalProperties: false,
-        },
-      },
     },
-    required: ["vendorName", "vendorSignals", "fields", "lineItems", "totals"],
+    required: ["vendorName", "vendorSignals", "lineItems"],
     additionalProperties: false,
   },
 };
@@ -175,11 +145,9 @@ const REPAIR_SCHEMA = {
           type: "object",
           properties: {
             name: { type: "string" },
-            type: { type: "string" },
             regex: { type: "string" },
-            group: { type: "number" },
           },
-          required: ["name", "type", "regex", "group"],
+          required: ["name", "regex"],
           additionalProperties: false,
         },
       },
@@ -216,23 +184,20 @@ const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document 
 - For quantity, look carefully at the document -- some formats put quantity in unexpected columns
 - unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)`;
 
-const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex-based extraction templates for invoice formats. You will receive the raw document text and the extracted data. Generate regex patterns that can re-extract the same data from any invoice in the same format.
+const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex patterns to extract LINE ITEMS from invoices. You only need to handle item rows -- metadata (order number, dates, tracking, totals) is handled separately.
 
 CRITICAL rules:
 - All regex patterns MUST use RE2-compatible syntax (NO lookaheads, lookbehinds, or backreferences)
-- Line item row patterns MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...)
-- Row patterns must match ANY number of item rows, not just the ones in this document
-- NEVER hardcode literal values from this invoice (part numbers, prices, names) into regex patterns. Use character classes like \\d+, \\S+, [^\\t]+, .+? instead
+- Row pattern MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...)
+- Row pattern must match ANY item row, not just the ones in this document
+- NEVER hardcode literal values from this invoice into regex patterns
 - Use \\s+ instead of literal spaces for flexible whitespace matching
-- Escape special regex characters properly
 - lineItems.start should match the TABLE HEADER row (column labels)
-- lineItems.end should match text AFTER the last item row (subtotal, total, payment terms, etc.)
+- lineItems.end should match text AFTER the last item row (subtotal, total, payment, etc.)
 - Do NOT match payment lines, subtotal lines, or footer text with the row pattern
 - For vendor signals, extract the company domain and a unique identifying phrase
-- fields is an array of {name, regex, group} objects. Use names like "orderNumber", "orderDate", "technicianName", "trackingNumber", "courier"
-- totals is an array of {name, regex} objects. Use names "tax" and "shipping"
 
-Study the document text carefully. Pay attention to tab characters, column ordering, and line structure. The regex must actually match the text format you see.`;
+Study the document text carefully. Pay attention to tab characters, column ordering, and line structure.`;
 
 // --- API functions ---
 
@@ -287,18 +252,14 @@ export async function llmGenerateTemplate(
   const start = Date.now();
   console.log(`[LLM] template generation starting (${model})`);
 
-  const extractionSummary = JSON.stringify({
-    vendor: extraction.vendor,
-    orderNumber: extraction.orderNumber,
-    items: extraction.items.map((i) => ({
+  const itemsSummary = JSON.stringify(
+    extraction.items.map((i) => ({
       partNumber: i.partNumber,
       partName: i.partName,
       quantity: i.quantity,
       unitPrice: i.unitPrice,
-    })),
-    totalTax: extraction.totalTax,
-    totalShipping: extraction.totalShipping,
-  });
+    }))
+  );
 
   const response = await client.chat.completions.create(
     {
@@ -308,7 +269,7 @@ export async function llmGenerateTemplate(
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Generate a reusable regex extraction template for this invoice format.\n\nExtracted data (for reference -- do NOT hardcode these values):\n${extractionSummary}${columnHint ? `\n\nIMPORTANT -- Column layout analysis of item lines:\n${columnHint}` : ""}\n\nRaw document text:\n${text}`,
+          content: `Generate regex patterns to extract line items from this invoice format.\n\nItems found (for reference -- do NOT hardcode these values):\n${itemsSummary}${columnHint ? `\n\nIMPORTANT -- Column layout analysis of item lines:\n${columnHint}` : ""}\n\nRaw document text:\n${text}`,
         },
       ],
       response_format: {
@@ -326,39 +287,34 @@ export async function llmGenerateTemplate(
     throw new Error("Empty template generation response");
   }
 
-  const parsed = JSON.parse(content) as ExtractionRules;
-  console.log(`[LLM] template generation done (${elapsed}s) -- vendor=${parsed.vendorName}, ${parsed.fields?.length ?? 0} fields, ${parsed.totals?.length ?? 0} totals`);
-  return parsed;
+  const parsed = JSON.parse(content);
+  // Ensure the result conforms to ExtractionRules (add empty fields/totals)
+  const rules: ExtractionRules = {
+    vendorName: parsed.vendorName,
+    vendorSignals: parsed.vendorSignals,
+    fields: [],
+    lineItems: parsed.lineItems,
+    totals: [],
+  };
+  console.log(`[LLM] template generation done (${elapsed}s) -- vendor=${rules.vendorName}`);
+  return rules;
 }
 
-interface FieldFailureInput {
-  name: string;
-  type: "field" | "total";
-  expected: string;
-  got: string;
-  context: string;
-}
-
-export async function llmRepairRegex(
-  failures: FieldFailureInput[],
+export async function llmRepairRowRegex(
+  failure: { expected: string; got: string; context: string },
   abortSignal?: AbortSignal
-): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
+): Promise<string | null> {
   const client = getOpenAIClient();
   const start = Date.now();
-  const names = failures.map((f) => f.name).join(", ");
-  console.log(`[LLM] regex repair starting (${TEMPLATE_MODEL}) -- fixing: ${names}`);
-
-  const failureDesc = failures.map((f) =>
-    `- ${f.type} "${f.name}": expected "${f.expected}", got "${f.got}"\n  Text around value: ${JSON.stringify(f.context)}`
-  ).join("\n");
+  console.log(`[LLM] row regex repair starting (${TEMPLATE_MODEL})`);
 
   const response = await client.chat.completions.create(
     {
       model: TEMPLATE_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: `You fix regex patterns that failed to extract values from invoice text. You are given the expected value, what the regex actually matched, and the surrounding text. Write RE2-compatible regex (no lookaheads/lookbehinds). For "field" type, use a capture group at the specified group index. For "total" type, capture the number in group 1. Study the exact text carefully -- pay attention to tabs (\\t), newlines (\\n), and column structure.` },
-        { role: "user", content: `These regex patterns failed. Fix each one:\n\n${failureDesc}` },
+        { role: "system", content: `You fix a regex pattern that failed to extract line items from an invoice. Write an RE2-compatible regex (no lookaheads/lookbehinds). The regex MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...). Study the exact text carefully -- pay attention to tabs and column structure.` },
+        { role: "user", content: `The row regex failed.\n\nExpected: ${failure.expected}\nGot: ${failure.got}\n\nContext:\n${failure.context}\n\nReturn the fixed row regex.` },
       ],
       response_format: {
         type: "json_schema",
@@ -371,13 +327,14 @@ export async function llmRepairRegex(
   const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
-    console.log(`[LLM] regex repair EMPTY response (${elapsed}s)`);
-    return [];
+    console.log(`[LLM] row regex repair EMPTY response (${elapsed}s)`);
+    return null;
   }
 
-  const parsed = JSON.parse(content) as { repairs: Array<{ name: string; type: string; regex: string; group: number }> };
-  console.log(`[LLM] regex repair done (${elapsed}s) -- ${parsed.repairs.length} repairs`);
-  return parsed.repairs;
+  const parsed = JSON.parse(content) as { repairs: Array<{ name: string; regex: string }> };
+  const rowRepair = parsed.repairs.find((r) => r.name === "row");
+  console.log(`[LLM] row regex repair done (${elapsed}s) -- ${rowRepair ? "got fix" : "no fix"}`);
+  return rowRepair?.regex ?? null;
 }
 
 export interface TemplateFillIn {

@@ -38,24 +38,14 @@ export function safeMatch(text: string, pattern: string, flags = ""): RegExpMatc
   }
 }
 
-function extractTotal(text: string, pattern: string | undefined): number {
-  if (!pattern) return 0;
-  const m = safeMatch(text, pattern, "s");
-  return m?.[1] ? parseFloat(m[1]) : 0;
-}
-
+/**
+ * Apply a template to extract line items only.
+ * Metadata (order number, dates, tracking, totals) always comes from nano fill-in.
+ */
 export function applyTemplate(
   text: string,
   rules: ExtractionRules
 ): DocumentResult {
-  // 1. Extract scalar fields
-  const fields: Record<string, string | null> = {};
-  for (const rule of rules.fields) {
-    const m = safeMatch(text, rule.regex, "s");
-    fields[rule.name] = m?.[rule.group] ?? null;
-  }
-
-  // 2. Extract line items between start/end markers
   const items: ExtractedItem[] = [];
   const startMatch = safeMatch(text, rules.lineItems.start, "i");
 
@@ -89,28 +79,13 @@ export function applyTemplate(
     }
   }
 
-  // 3. Extract totals and distribute proportionally
-  const taxRule = rules.totals.find((t) => t.name === "tax");
-  const shipRule = rules.totals.find((t) => t.name === "shipping");
-  let tax = extractTotal(text, taxRule?.regex);
-  let shipping = extractTotal(text, shipRule?.regex);
-
-  // Sanity check: tax or shipping exceeding subtotal means the regex grabbed the wrong number
-  const subtotal = items.reduce((sum, item) => sum + (item.unitPrice ?? 0) * item.quantity, 0);
-  if (tax > subtotal) tax = 0;
-  if (shipping > subtotal) shipping = 0;
-
-  if (tax > 0 || shipping > 0) {
-    distributeAndNormalize(items, shipping, tax);
-  }
-
   return {
     vendor: rules.vendorName,
-    orderNumber: fields["orderNumber"] ?? null,
-    orderDate: fields["orderDate"] ?? null,
-    technicianName: fields["technicianName"] ?? null,
-    trackingNumber: fields["trackingNumber"] ?? null,
-    deliveryCourier: fields["courier"] ?? null,
+    orderNumber: null,
+    orderDate: null,
+    technicianName: null,
+    trackingNumber: null,
+    deliveryCourier: null,
     items,
     rawText: text,
   };
