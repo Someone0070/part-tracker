@@ -181,13 +181,16 @@ const FILL_IN_SCHEMA = {
 const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals. Reply with structured JSON.
 
 - vendor is the PLATFORM or STORE name (e.g. "Amazon", "eBay", "Encompass", "WCP"), NOT the individual seller/merchant
-- ALWAYS extract totalTax and totalShipping. Look for tax/shipping amounts even in unusual formats (stacked labels then values, summary tables, etc.)
+- ALWAYS extract totalTax and totalShipping. Some invoices list summary labels in one block and their dollar values in a separate block below, in the same order. Match them positionally (e.g. if labels are "Merchandise Subtotal / Shipping & Handling / Tax Amount / Core Amount" and values below are "148.95 / 14.75 / 12.85 / 0.00", then shipping=14.75 and tax=12.85)
 - For totalShipping, account for shipping discounts/credits (e.g. "Shipping: $2.99" + "Free Shipping: -$2.99" = totalShipping 0)
 - For quantity, look carefully at the document -- some formats put quantity in unexpected columns. "1 of:" means quantity 1
 - unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
 - technicianName is the SHIPPING RECIPIENT (the person the package is shipped to). Look for the name under "Ship to", "Shipping address", "Deliver to", "Recipient". This is NOT the buyer username or account name -- it's the physical person receiving the package.
 - For Amazon invoices, items start with "N of:" where N is the quantity. Extract the product name after "of:"
-- partNumber should be an actual product/part identifier, NOT an order number
+- partNumber should be an actual product/part identifier, NOT an order number. In tabular invoices, columns like "MFG" or manufacturer codes (e.g. "SHA", "WHP") are the brand, NOT part of the part number or description
+- brand: extract the manufacturer/brand. In tab-delimited invoices look for the MFG column
+- deliveryCourier is the shipping carrier or service (USPS, UPS, FedEx, DHL, etc). If only a service level is shown (e.g. "eBay Economy", "Standard Shipping", "Prime"), use that. Also look for "Ship Via" fields
+- trackingNumber is the package tracking number/ID
 - ALL fields are required. Search the entire document thoroughly before returning null`;
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex patterns to extract LINE ITEMS from invoices. You only need to handle item rows -- metadata (order number, dates, tracking, totals) is handled separately.
@@ -408,7 +411,7 @@ export async function llmFillIn(
       model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract ALL order metadata from this invoice. Every field is REQUIRED -- search the entire document thoroughly before returning null.\n\n- orderNumber: the order/invoice number\n- orderDate: when the order was placed\n- technicianName: the SHIPPING RECIPIENT (person under 'Ship to' / 'Shipping address' / 'Deliver to'), NOT the buyer username or account name\n- trackingNumber: package tracking number\n- deliveryCourier: the actual delivery carrier (USPS, UPS, FedEx, DHL, etc). If only a service level is shown (e.g. 'eBay Economy', 'Prime'), use that\n- totalTax: total tax amount\n- totalShipping: total shipping cost (account for discounts: Shipping $2.99 + Free Shipping -$2.99 = 0)\n\nOnly return null if the information truly does not exist anywhere in the document." },
+        { role: "system", content: "Extract ALL order metadata from this invoice. Every field is REQUIRED -- search the entire document thoroughly before returning null.\n\n- orderNumber: the order/invoice number\n- orderDate: when the order was placed\n- technicianName: the SHIPPING RECIPIENT (person under 'Ship to' / 'Shipping address' / 'Deliver to'), NOT the buyer username or account name\n- trackingNumber: package tracking number\n- deliveryCourier: the actual delivery carrier (USPS, UPS, FedEx, DHL, etc). If only a service level is shown (e.g. 'eBay Economy', 'Prime'), use that\n- totalTax: total tax amount. Some invoices list labels in one block and values in another -- match positionally (e.g. 'Shipping & Handling / Tax Amount' then '14.75 / 12.85' means shipping=14.75, tax=12.85)\n- totalShipping: total shipping cost (account for discounts: Shipping $2.99 + Free Shipping -$2.99 = 0). Also check 'Ship Via' or 'Shipping & Handling' fields\n\nOnly return null if the information truly does not exist anywhere in the document." },
         { role: "user", content: snippet },
       ],
       response_format: {

@@ -64,6 +64,106 @@ export function findBrand(text: string): string | null {
 
 const MAX_LLM_TEXT = 10_000;
 
+const ZAI_OCR_URL = "https://api.z.ai/api/paas/v4/layout_parsing";
+
+/**
+ * Detect if pdf-parse produced poor quality text that would confuse LLM extraction.
+ * Returns a reason string if quality is poor, null if OK.
+ */
+function textQualityPoor(text: string): string | null {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) return null;
+
+  // 1. Orphan number blocks: 3+ consecutive lines that are just bare numbers
+  //    (labels separated from their values, e.g. Encompass summary)
+  let consecutiveNums = 0;
+  for (const line of lines) {
+    if (/^\$?\d[\d,.]*$/.test(line)) {
+      consecutiveNums++;
+      if (consecutiveNums >= 3) return "orphan-numbers";
+    } else {
+      consecutiveNums = 0;
+    }
+  }
+
+  // 2. Fragment soup: >40% of lines are very short (1-3 chars)
+  //    Signals fragmented column cells extracted one per line
+  const fragments = lines.filter((l) => l.length <= 3).length;
+  if (lines.length >= 10 && fragments / lines.length > 0.4) return "fragment-soup";
+
+  // 3. Label dump: many label-like lines ("Foo:" or "Foo Bar:") without adjacent values
+  //    5+ consecutive label-only lines = values are elsewhere
+  let consecutiveLabels = 0;
+  for (const line of lines) {
+    if (/^[A-Za-z][A-Za-z &\/\-#.]+:?\s*$/.test(line) && line.length < 40) {
+      consecutiveLabels++;
+      if (consecutiveLabels >= 5) return "label-dump";
+    } else {
+      consecutiveLabels = 0;
+    }
+  }
+
+  // 4. Near-duplicate blocks: same 50+ char substring appears 2+ times
+  //    pdf-parse sometimes extracts overlaid text twice
+  if (text.length > 200) {
+    const half = Math.floor(text.length / 2);
+    const firstHalf = text.slice(0, half);
+    const secondHalf = text.slice(half);
+    // Check if a significant chunk (50+ chars) from first half repeats in second half
+    const sample = firstHalf.slice(0, 100);
+    if (sample.length >= 50 && secondHalf.includes(sample)) return "duplicate-text";
+  }
+
+  return null;
+}
+
+/**
+ * Re-extract text from PDF using z.ai GLM OCR (layout_parsing).
+ * Returns cleaner text with proper label-value associations.
+ */
+async function ocrExtractText(pdfBase64: string, abortSignal?: AbortSignal): Promise<string | null> {
+  const apiKey = process.env.ZAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const dataUri = `data:application/pdf;base64,${pdfBase64}`;
+    const res = await fetch(ZAI_OCR_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model: "glm-ocr", file: dataUri }),
+      signal: abortSignal,
+    });
+
+    if (!res.ok) {
+      console.warn(`[OCR] z.ai returned ${res.status}`);
+      return null;
+    }
+
+    const data = (await res.json()) as {
+      content?: string;
+      text?: string;
+      md_results?: string;
+      layout_details?: Array<{ content?: string }>;
+    };
+
+    const ocrText =
+      data.md_results ??
+      data.content ??
+      data.text ??
+      data.layout_details?.map((d) => d.content ?? "").join("\n") ??
+      "";
+
+    if (ocrText.length < 20) return null;
+    return ocrText;
+  } catch (err) {
+    console.warn("[OCR] fallback failed:", err);
+    return null;
+  }
+}
+
 // --- Layout type detection ---
 
 export type LayoutType = "tab-delimited" | "n-of" | "space-aligned" | "labeled";
@@ -159,9 +259,21 @@ export async function parseDocument(
   const result = await parser.getText();
   await parser.destroy();
 
-  const text = result.text.replace(/\f/g, "\n").trim();
+  let text = result.text.replace(/\f/g, "\n").trim();
   if (text.length < 20) {
     throw new Error("Document appears to be empty or image-only");
+  }
+
+  // Check if pdf-parse produced garbled text
+  const qualityIssue = textQualityPoor(text);
+  if (qualityIssue) {
+    console.log(`[OCR] pdf-parse quality issue: ${qualityIssue}, trying GLM OCR fallback...`);
+    onStep("ocr_fallback", "Re-extracting with OCR (better layout)...");
+    const ocrText = await ocrExtractText(pdfBase64, abortSignal);
+    if (ocrText) {
+      console.log(`[OCR] fallback succeeded (${ocrText.length} chars vs pdf-parse ${text.length} chars)`);
+      text = ocrText;
+    }
   }
 
   // LLM-only mode: skip template matching entirely
