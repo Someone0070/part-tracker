@@ -313,6 +313,19 @@ function columnHintFor(text: string, extraction: { items: Array<{ partNumber: st
   return `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
 }
 
+/** Wrap a promise with a timeout */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+    ),
+  ]);
+}
+
+const TEMPLATE_GEN_TIMEOUT = 15_000;  // 15s per LLM call
+const TOTAL_BACKGROUND_TIMEOUT = 45_000;  // 45s total for entire background process
+
 function learnTemplateInBackground(
   text: string,
   llmText: string,
@@ -320,15 +333,27 @@ function learnTemplateInBackground(
   existingTemplateId: number | undefined,
   columnHint: string
 ): void {
+  // Skip template generation for formats without tab-delimited rows.
+  // Amazon/eBay PDFs have multiline descriptions that regex can't handle well.
+  // Nano extraction is fast and reliable for these.
+  const hasTabRows = text.split("\n").some((line) => line.split("\t").length >= 4);
+  if (!hasTabRows) {
+    console.log("[Template] skipping -- no tab-delimited rows (nano-only vendor)");
+    return;
+  }
+
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {
     console.log(`[Template] no column hint generated`);
   }
 
-  (async () => {
+  const bgTask = async () => {
     try {
-      const templateRules = await llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint);
+      const templateRules = await withTimeout(
+        llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint),
+        TEMPLATE_GEN_TIMEOUT, "mini template gen"
+      );
 
       let saved = false;
       for (let attempt = 0; attempt < 2 && !saved; attempt++) {
@@ -354,11 +379,14 @@ function learnTemplateInBackground(
               }
             }
 
-            const fixedRow = await llmRepairRowRegex({
-              expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
-              got: validation.reason ?? "0 items matched",
-              context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
-            });
+            const fixedRow = await withTimeout(
+              llmRepairRowRegex({
+                expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
+                got: validation.reason ?? "0 items matched",
+                context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
+              }),
+              TEMPLATE_GEN_TIMEOUT, "row repair"
+            );
 
             if (fixedRow) templateRules.lineItems.row = fixedRow;
           }
@@ -371,7 +399,10 @@ function learnTemplateInBackground(
       if (!saved && isEscalationConfigured()) {
         console.log("[Template] escalating to Gemini 2.5 Flash...");
         try {
-          const escalatedRules = await llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint);
+          const escalatedRules = await withTimeout(
+            llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint),
+            30_000, "Gemini escalation"
+          );
           const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
           if (escalatedValidation.valid) {
             await upsertTemplate(escalatedRules, existingTemplateId);
@@ -392,7 +423,12 @@ function learnTemplateInBackground(
       console.warn("[Template] background generation failed:", err);
       recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
     }
-  })();
+  };
+
+  // Total timeout prevents runaway background tasks
+  withTimeout(bgTask(), TOTAL_BACKGROUND_TIMEOUT, "background template gen").catch((err) => {
+    console.warn("[Template] background timed out:", err.message);
+  });
 }
 
 function verifyTemplateInBackground(
