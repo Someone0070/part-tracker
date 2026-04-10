@@ -3,6 +3,7 @@ import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } fro
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
 import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, isEscalationConfigured, ESCALATION_MODEL } from "./template-llm.js";
+import { checkExtraction } from "./extraction-sanity.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -131,6 +132,19 @@ export async function parseDocument(
           } catch {
             // Non-critical
           }
+        }
+
+        // Sanity check: do the numbers make sense?
+        const sanity = checkExtraction(extracted);
+        if (!sanity.pass) {
+          console.warn(`Template sanity check FAILED (score=${sanity.score}):`, sanity.failures);
+          onStep("sanity_failed", `Template data looks wrong (${sanity.failures[0]}). Falling back to LLM...`);
+          incrementFail(tpl.id).catch(() => {});
+          return llmExtractOnly(text, onStep, abortSignal);
+        }
+
+        if (sanity.failures.length > 0) {
+          console.warn(`Template sanity warnings (score=${sanity.score}):`, sanity.failures);
         }
 
         incrementSuccess(tpl.id).catch(() => {});
