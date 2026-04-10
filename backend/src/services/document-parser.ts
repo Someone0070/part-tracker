@@ -333,15 +333,6 @@ function learnTemplateInBackground(
   existingTemplateId: number | undefined,
   columnHint: string
 ): void {
-  // Skip template generation for formats without tab-delimited rows.
-  // Amazon/eBay PDFs have multiline descriptions that regex can't handle well.
-  // Nano extraction is fast and reliable for these.
-  const hasTabRows = text.split("\n").some((line) => line.split("\t").length >= 4);
-  if (!hasTabRows) {
-    console.log("[Template] skipping -- no tab-delimited rows (nano-only vendor)");
-    return;
-  }
-
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {
