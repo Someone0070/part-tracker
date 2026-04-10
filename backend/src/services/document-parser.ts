@@ -64,6 +64,28 @@ export function findBrand(text: string): string | null {
 
 const MAX_LLM_TEXT = 10_000;
 
+/**
+ * Fix tracking numbers that got split across PDF lines.
+ * If the tracking number appears in the raw text and the next line
+ * is a short numeric continuation (1-3 digits), concatenate them.
+ */
+function fixSplitTracking(result: DocumentResult): void {
+  if (!result.trackingNumber || !result.rawText) return;
+  const tracking = result.trackingNumber;
+  // Only fix numeric tracking numbers
+  if (!/^\d{8,}$/.test(tracking)) return;
+
+  const lines = result.rawText.split("\n");
+  const idx = lines.findIndex((l) => l.trim() === tracking || l.includes(tracking));
+  if (idx < 0 || idx + 1 >= lines.length) return;
+
+  const nextLine = lines[idx + 1].trim();
+  // Short numeric continuation (1-3 digits, nothing else on the line)
+  if (/^\d{1,3}$/.test(nextLine)) {
+    result.trackingNumber = tracking + nextLine;
+  }
+}
+
 export async function parseDocument(
   pdfBase64: string,
   onStep: StepCallback = () => {},
@@ -163,6 +185,7 @@ export async function parseDocument(
           verifyTemplateInBackground(text, extracted, tpl.id);
         }
 
+        fixSplitTracking(extracted);
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
       }
@@ -228,9 +251,7 @@ async function llmExtractOnly(
     distributeAndNormalize(items, shipping, tax);
   }
 
-  onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted (LLM only)`);
-
-  return {
+  const result: DocumentResult = {
     vendor: extraction.vendor,
     orderNumber: extraction.orderNumber,
     orderDate: extraction.orderDate,
@@ -240,6 +261,10 @@ async function llmExtractOnly(
     items,
     rawText: text,
   };
+  fixSplitTracking(result);
+
+  onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted (LLM only)`);
+  return result;
 }
 
 async function llmPath(
@@ -446,6 +471,7 @@ async function llmPath(
     recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
   }
 
+  fixSplitTracking(docResult);
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
 }
