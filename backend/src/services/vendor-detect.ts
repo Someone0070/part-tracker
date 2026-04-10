@@ -4,6 +4,8 @@ import { eq, sql } from "drizzle-orm";
 import type { VendorTemplate, VendorMatch, ExtractionRules } from "./template-types.js";
 import { deriveVendorKey } from "./template-types.js";
 
+const GENERATION_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 function parseRules(row: typeof vendorTemplates.$inferSelect): VendorTemplate {
   return {
     id: row.id,
@@ -14,7 +16,19 @@ function parseRules(row: typeof vendorTemplates.$inferSelect): VendorTemplate {
     extractionRules: JSON.parse(row.extractionRules) as ExtractionRules,
     successCount: row.successCount,
     failCount: row.failCount,
+    lastGenerationAttempt: row.lastGenerationAttempt,
   };
+}
+
+/** Check if a template generation attempt is still in cooldown (< 7 days). */
+export function isInCooldown(template: VendorTemplate): boolean {
+  if (!template.lastGenerationAttempt) return false;
+  return Date.now() - template.lastGenerationAttempt.getTime() < GENERATION_COOLDOWN_MS;
+}
+
+/** Returns true if the template has usable extraction rules (non-empty row regex). */
+export function hasUsableRules(template: VendorTemplate): boolean {
+  return !!template.extractionRules.lineItems.row;
 }
 
 export async function loadAllTemplates(): Promise<VendorTemplate[]> {
@@ -91,6 +105,7 @@ export async function upsertTemplate(
     extractionRules: rulesJson,
     successCount: 0,
     failCount: 0,
+    lastGenerationAttempt: new Date(),
     updatedAt: new Date(),
   };
 
@@ -109,4 +124,45 @@ export async function upsertTemplate(
         set: values,
       });
   }
+}
+
+/**
+ * Record a failed template generation attempt. Saves a stub record so that
+ * future uploads of the same vendor skip template generation for 7 days.
+ */
+export async function recordFailedAttempt(
+  vendorName: string,
+  signals: { domains: string[]; keywords: string[] }
+): Promise<void> {
+  const db = getDb();
+  const vendorKey = deriveVendorKey(signals);
+  const stubRules: ExtractionRules = {
+    vendorName,
+    vendorSignals: signals,
+    fields: [],
+    lineItems: { start: "", end: "", row: "" },
+    totals: [],
+  };
+
+  await db
+    .insert(vendorTemplates)
+    .values({
+      vendorKey,
+      vendorName,
+      vendorDomains: signals.domains,
+      vendorKeywords: signals.keywords,
+      extractionRules: JSON.stringify(stubRules),
+      successCount: 0,
+      failCount: 1,
+      lastGenerationAttempt: new Date(),
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: vendorTemplates.vendorKey,
+      set: {
+        lastGenerationAttempt: new Date(),
+        failCount: sql`${vendorTemplates.failCount} + 1`,
+        updatedAt: new Date(),
+      },
+    });
 }

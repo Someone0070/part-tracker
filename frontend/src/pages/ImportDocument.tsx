@@ -1,7 +1,13 @@
 import { useState, useRef, type ChangeEvent, type DragEvent } from "react";
-import { getAccessToken, refreshAccessToken } from "../api/client";
+import { getAccessToken, refreshAccessToken, api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { UrlImportForm } from "../components/UrlImportForm";
+import { useSettings } from "../hooks/useSettings";
+
+const TEMPLATE_MODELS = [
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "Faster, cheaper" },
+  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 35B", description: "Smarter, 4x cost" },
+] as const;
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -54,6 +60,7 @@ function Row({ label, value }: { label: string; value: string | null | undefined
 }
 
 export function ImportDocument() {
+  const { settings, setSettings } = useSettings();
   const [result, setResult] = useState<ParseResult | null>(null);
   const [steps, setSteps] = useState<StepEntry[]>([]);
   const [parsing, setParsing] = useState(false);
@@ -63,6 +70,20 @@ export function ImportDocument() {
   const dragCounter = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const templateModel = settings?.templateModel ?? "qwen/qwen3.5-flash-02-23";
+
+  function handleModelChange(modelId: string) {
+    if (!settings) return;
+    setSettings({ ...settings, templateModel: modelId });
+    api("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ templateModel: modelId }),
+    }).catch(() => {
+      // Revert on failure
+      setSettings({ ...settings });
+    });
+  }
+
   async function processFile(file: File) {
     setError("");
     setParsing(true);
@@ -71,7 +92,7 @@ export function ImportDocument() {
 
     try {
       const base64 = await fileToBase64(file);
-      const body = JSON.stringify({ document: base64 });
+      const body = JSON.stringify({ document: base64, templateModel });
 
       async function doRequest(token: string): Promise<Response> {
         return fetch("/api/parts/import", {
@@ -211,6 +232,24 @@ export function ImportDocument() {
           URL Import
         </button>
       </div>
+
+      {/* Template model picker */}
+      {tab === "pdf" && !result && (
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-xs text-gray-500 dark:text-gray-400">Template model:</span>
+          <select
+            value={templateModel}
+            onChange={(e) => handleModelChange(e.target.value)}
+            className="text-xs px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-gray-400"
+          >
+            {TEMPLATE_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} -- {m.description}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">

@@ -54,6 +54,7 @@ export interface VendorTemplate {
   extractionRules: ExtractionRules;
   successCount: number;
   failCount: number;
+  lastGenerationAttempt: Date | null;
 }
 
 export interface VendorMatch {

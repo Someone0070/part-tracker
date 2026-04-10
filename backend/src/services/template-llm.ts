@@ -26,7 +26,22 @@ export interface LlmResult {
   template: ExtractionRules;
 }
 
-// --- Extraction (nano: fast + cheap) ---
+// --- Model constants ---
+
+/** Cheap model for extraction + fill-in */
+const EXTRACTION_MODEL = "qwen/qwen3.5-9b";
+
+/** Available template generation models (user-selectable) */
+export const TEMPLATE_MODELS = [
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "Faster, cheaper" },
+  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B", description: "Smarter, 4x cost" },
+] as const;
+
+export type TemplateModelId = typeof TEMPLATE_MODELS[number]["id"];
+
+export const DEFAULT_TEMPLATE_MODEL: TemplateModelId = "qwen/qwen3.5-flash-02-23";
+
+// --- Extraction (cheap + fast) ---
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals. Reply with structured JSON.
 
@@ -69,7 +84,7 @@ const EXTRACTION_SCHEMA = {
   },
 };
 
-// --- Template generation (mini: precise regex crafting) ---
+// --- Template generation (smarter model for regex crafting) ---
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex-based extraction templates for invoice formats. You will receive the raw document text and the extracted data. Generate regex patterns that can re-extract the same data from any invoice in the same format.
 
@@ -150,15 +165,18 @@ let _client: OpenAI | null = null;
 
 function getClient(): OpenAI {
   if (!_client) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
-    _client = new OpenAI({ apiKey });
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
+    _client = new OpenAI({
+      apiKey,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
   }
   return _client;
 }
 
 export function isLlmConfigured(): boolean {
-  return !!process.env.OPENAI_API_KEY;
+  return !!process.env.OPENROUTER_API_KEY;
 }
 
 export async function llmExtract(
@@ -169,7 +187,7 @@ export async function llmExtract(
 
   const response = await client.chat.completions.create(
     {
-      model: "gpt-5.4-nano",
+      model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
@@ -195,6 +213,7 @@ export async function llmExtract(
 export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
+  templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<ExtractionRules> {
   const client = getClient();
@@ -214,7 +233,7 @@ export async function llmGenerateTemplate(
 
   const response = await client.chat.completions.create(
     {
-      model: "gpt-5.4-mini",
+      model: templateModel,
       temperature: 0,
       messages: [
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
@@ -272,12 +291,11 @@ interface FieldFailureInput {
 }
 
 /**
- * Ask mini to fix specific regex patterns that failed validation.
- * Sends the failure details + surrounding text context so it can
- * see exactly what the text looks like and craft a working pattern.
+ * Ask the template model to fix specific regex patterns that failed validation.
  */
 export async function llmRepairRegex(
   failures: FieldFailureInput[],
+  templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
   const client = getClient();
@@ -288,7 +306,7 @@ export async function llmRepairRegex(
 
   const response = await client.chat.completions.create(
     {
-      model: "gpt-5.4-mini",
+      model: templateModel,
       temperature: 0,
       messages: [
         { role: "system", content: `You fix regex patterns that failed to extract values from invoice text. You are given the expected value, what the regex actually matched, and the surrounding text. Write RE2-compatible regex (no lookaheads/lookbehinds). For "field" type, use a capture group at the specified group index. For "total" type, capture the number in group 1. Study the exact text carefully — pay attention to tabs (\\t), newlines (\\n), and column structure.` },
@@ -339,20 +357,18 @@ const FILL_IN_SCHEMA = {
 };
 
 /**
- * Cheap nano call to fill in fields the template regex couldn't extract.
- * Used when a saved template extracts items but misses metadata/totals.
+ * Cheap call to fill in fields the template regex couldn't extract.
  */
 export async function llmFillIn(
   text: string,
   abortSignal?: AbortSignal
 ): Promise<TemplateFillIn> {
   const client = getClient();
-  // Trim to keep token cost low
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
 
   const response = await client.chat.completions.create(
     {
-      model: "gpt-5.4-nano",
+      model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
         { role: "system", content: "Extract order metadata from this invoice: order number, order date, technician/recipient name, tracking number, delivery courier, total tax, and total shipping. Return null for anything not found." },

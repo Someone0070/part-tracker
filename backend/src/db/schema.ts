@@ -62,6 +62,7 @@ export const settings = pgTable("settings", {
   apiKeyHash: text("api_key_hash"),
   apiKeyPrefix: text("api_key_prefix"),
   apiKeyScopes: text("api_key_scopes"),
+  templateModel: text("template_model").notNull().default("qwen/qwen3.5-flash-02-23"),
 });
 
 export const inventoryEvents = pgTable("inventory_events", {
@@ -108,6 +109,7 @@ export const vendorTemplates = pgTable("vendor_templates", {
   extractionRules: text("extraction_rules").notNull(),
   successCount: integer("success_count").notNull().default(0),
   failCount: integer("fail_count").notNull().default(0),
+  lastGenerationAttempt: timestamp("last_generation_attempt", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

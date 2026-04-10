@@ -25,6 +25,7 @@ export const updateSettingsSchema = z.object({
   crossRefEnabled: z.boolean().optional(),
   darkMode: z.boolean().optional(),
   ebayEnabled: z.boolean().optional(),
+  templateModel: z.enum(["qwen/qwen3.5-flash-02-23", "qwen/qwen3.5-35b-a3b"]).optional(),
 });
 
 export const loginSchema = z.object({

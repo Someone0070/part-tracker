@@ -50,6 +50,13 @@
       "when": 1775710529033,
       "tag": "0006_vendor_cookies_presets",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1775779200000,
+      "tag": "0007_template_cooldown_model",
+      "breakpoints": true
     }
   ]
 }

@@ -43,7 +43,7 @@ router.post("/ocr", requireScope("parts:write"), async (req, res) => {
 
 // POST /api/parts/import -- extract parts from PDF document (SSE stream)
 router.post("/import", requireScope("parts:write"), async (req, res) => {
-  const { document } = req.body as { document?: unknown };
+  const { document, templateModel } = req.body as { document?: unknown; templateModel?: string };
 
   if (typeof document !== "string") {
     res.status(400).json({ error: "document must be a base64 string" });
@@ -75,7 +75,11 @@ router.post("/import", requireScope("parts:write"), async (req, res) => {
   }
 
   try {
-    const result = await parseDocument(document, sendStep, abort.signal);
+    const result = await parseDocument(document, {
+      onStep: sendStep,
+      abortSignal: abort.signal,
+      templateModel: templateModel as any,
+    });
     if (!abort.signal.aborted) {
       res.write(`event: result\ndata: ${JSON.stringify({ ...result, steps })}\n\n`);
     }
