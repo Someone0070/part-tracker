@@ -197,9 +197,12 @@ export async function parseHtmlChain(
   if (hardcodedConfig) {
     const hardcodedResult = parseHtmlWithSelectors(html, hardcodedConfig, vendorName);
     const validation = validateExtractionResult(hardcodedResult);
+    console.log(`[HTMLParse] Stage 1 (hardcoded): ${hardcodedResult.items.length} items, valid=${validation.valid}`);
     if (validation.valid) {
       return { result: hardcodedResult, source: "hardcoded" };
     }
+  } else {
+    console.log(`[HTMLParse] Stage 1: no hardcoded parser for ${hostname}`);
   }
 
   // Stage 2: Saved preset
@@ -207,17 +210,22 @@ export async function parseHtmlChain(
   if (presetData && presetData.config.type === "html") {
     const presetResult = parseHtmlWithSelectors(html, presetData.config, vendorName);
     const validation = validateExtractionResult(presetResult);
+    console.log(`[HTMLParse] Stage 2 (preset): ${presetResult.items.length} items, valid=${validation.valid}`);
     if (validation.valid) {
       await recordPresetSuccess(presetData.preset.id);
       return { result: presetResult, source: "preset" };
     }
     await recordPresetFailure(presetData.preset.id);
+  } else {
+    console.log(`[HTMLParse] Stage 2: no preset for ${vendorKey}`);
   }
 
   // Stage 3: LLM fallback
   const llmResult = await llmFallback(html);
+  console.log(`[HTMLParse] Stage 3 (LLM): ${llmResult ? `${llmResult.items.length} items` : "null"}`);
   if (llmResult) {
     const validation = validateExtractionResult(llmResult);
+    console.log(`[HTMLParse] Stage 3 validation: valid=${validation.valid}, issues=${validation.issues?.join(", ")}`);
     if (validation.valid) {
       onLearnSelectors?.(llmResult, html, vendorKey, fingerprint).catch((err) => {
         console.error("Selector learning failed:", err);

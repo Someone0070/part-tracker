@@ -9,9 +9,13 @@ import OpenAI from "openai";
 // --- Step 1: LLM item extraction (uses OpenAI nano, same as PDF path) ---
 
 export async function extractItemsViaLlm(html: string, vendorName: string): Promise<DocumentResult | null> {
-  if (!isLlmConfigured()) return null;
+  if (!isLlmConfigured()) {
+    console.warn("[URL Import] OPENAI_API_KEY not set, skipping LLM extraction");
+    return null;
+  }
 
   const text = redactForLlm(html);
+  console.log(`[URL Import] LLM extraction starting (${text.length} chars)`);
 
   try {
     const extraction = await llmExtract(text);
