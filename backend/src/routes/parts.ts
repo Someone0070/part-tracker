@@ -43,7 +43,11 @@ router.post("/ocr", requireScope("parts:write"), async (req, res) => {
 
 // POST /api/parts/import -- extract parts from PDF document (SSE stream)
 router.post("/import", requireScope("parts:write"), async (req, res) => {
-  const { document } = req.body as { document?: unknown };
+  const { document, mode, model } = req.body as {
+    document?: unknown;
+    mode?: string;
+    model?: string;
+  };
 
   if (typeof document !== "string") {
     res.status(400).json({ error: "document must be a base64 string" });
@@ -75,7 +79,12 @@ router.post("/import", requireScope("parts:write"), async (req, res) => {
   }
 
   try {
-    const result = await parseDocument(document, sendStep, abort.signal);
+    const validModes = ["llm", "template", "template+"];
+    const validModels = ["gpt-5.4-nano", "gpt-5-nano", "gpt-4.1-nano", "gpt-5.4-nano-batch"];
+    const extractionMode = validModes.includes(mode as string) ? (mode as string) : "template";
+    const extractionModel = validModels.includes(model as string) ? (model as string) : undefined;
+
+    const result = await parseDocument(document, sendStep, abort.signal, extractionMode, extractionModel);
     if (!abort.signal.aborted) {
       res.write(`event: result\ndata: ${JSON.stringify({ ...result, steps })}\n\n`);
     }

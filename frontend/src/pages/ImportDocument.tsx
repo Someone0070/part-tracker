@@ -53,6 +53,22 @@ function Row({ label, value }: { label: string; value: string | null | undefined
   );
 }
 
+type ExtractionMode = "llm" | "template" | "template+";
+type ExtractionModel = "gpt-5.4-nano" | "gpt-5-nano" | "gpt-4.1-nano" | "gpt-5.4-nano-batch";
+
+const MODELS: Array<{ id: ExtractionModel; label: string; cost: string }> = [
+  { id: "gpt-5-nano", label: "GPT-5 Nano", cost: "~$0.0003" },
+  { id: "gpt-4.1-nano", label: "GPT-4.1 Nano", cost: "~$0.0004" },
+  { id: "gpt-5.4-nano", label: "GPT-5.4 Nano", cost: "~$0.001" },
+  { id: "gpt-5.4-nano-batch", label: "GPT-5.4 Nano Batch", cost: "~$0.0005" },
+];
+
+const MODES: Array<{ id: ExtractionMode; label: string; desc: string }> = [
+  { id: "llm", label: "LLM Only", desc: "Nano extracts everything, no templates" },
+  { id: "template", label: "Template", desc: "Regex items + nano metadata" },
+  { id: "template+", label: "Template+", desc: "Full regex extraction, no LLM needed" },
+];
+
 export function ImportDocument() {
   const [result, setResult] = useState<ParseResult | null>(null);
   const [steps, setSteps] = useState<StepEntry[]>([]);
@@ -60,6 +76,9 @@ export function ImportDocument() {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [tab, setTab] = useState<"pdf" | "url">("pdf");
+  const [mode, setMode] = useState<ExtractionMode>("template");
+  const [model, setModel] = useState<ExtractionModel>("gpt-5.4-nano");
+  const [showOptions, setShowOptions] = useState(false);
   const dragCounter = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -71,7 +90,7 @@ export function ImportDocument() {
 
     try {
       const base64 = await fileToBase64(file);
-      const body = JSON.stringify({ document: base64 });
+      const body = JSON.stringify({ document: base64, mode, model });
 
       async function doRequest(token: string): Promise<Response> {
         return fetch("/api/parts/import", {
@@ -211,6 +230,77 @@ export function ImportDocument() {
           URL Import
         </button>
       </div>
+
+      {tab === "pdf" && !result && !parsing && (
+        <div className="mb-4">
+          <button
+            type="button"
+            onClick={() => setShowOptions(!showOptions)}
+            className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 mb-2"
+          >
+            <Icon name={showOptions ? "expand_less" : "tune"} size={14} />
+            {showOptions ? "Hide options" : "Extraction options"}
+          </button>
+
+          {showOptions && (
+            <div className="p-3 rounded-lg border border-gray-200 dark:border-gray-700 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Mode</label>
+                <div className="flex gap-1 p-0.5 rounded-lg bg-gray-100 dark:bg-gray-800">
+                  {MODES.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setMode(m.id)}
+                      className={`flex-1 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                        mode === m.id
+                          ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+                          : "text-gray-500 dark:text-gray-400"
+                      }`}
+                      title={m.desc}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                  {MODES.find((m) => m.id === mode)?.desc}
+                </p>
+              </div>
+
+              {mode !== "template+" && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Model</label>
+                  <div className="space-y-1">
+                    {MODELS.map((m) => (
+                      <label
+                        key={m.id}
+                        className={`flex items-center justify-between px-2.5 py-1.5 rounded-md cursor-pointer transition-colors ${
+                          model === m.id
+                            ? "bg-gray-100 dark:bg-gray-800 ring-1 ring-gray-300 dark:ring-gray-600"
+                            : "hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name="model"
+                            checked={model === m.id}
+                            onChange={() => setModel(m.id)}
+                            className="text-gray-900 dark:text-gray-100"
+                          />
+                          <span className="text-xs text-gray-700 dark:text-gray-300">{m.label}</span>
+                        </div>
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">{m.cost}/doc</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">

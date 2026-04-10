@@ -208,15 +208,17 @@ Study the document text carefully. Pay attention to tab characters, column order
 
 export async function llmExtract(
   text: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  modelOverride?: string
 ): Promise<LlmExtraction> {
+  const model = modelOverride === "gpt-5.4-nano-batch" ? EXTRACTION_MODEL : (modelOverride ?? EXTRACTION_MODEL);
   const client = getOpenAIClient();
   const start = Date.now();
-  console.log(`[LLM] extraction starting (${EXTRACTION_MODEL}, ${text.length} chars)`);
+  console.log(`[LLM] extraction starting (${model}, ${text.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model: EXTRACTION_MODEL,
+      model,
       temperature: 0,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },

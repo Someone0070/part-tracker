@@ -148,7 +148,9 @@ async function fillMetadata(
 export async function parseDocument(
   pdfBase64: string,
   onStep: StepCallback = () => {},
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  mode: string = "template",
+  extractionModel?: string
 ): Promise<DocumentResult> {
   // Step 1: Extract text
   onStep("extracting_text", "Extracting text from PDF...");
@@ -160,6 +162,11 @@ export async function parseDocument(
   const text = result.text.replace(/\f/g, "\n").trim();
   if (text.length < 20) {
     throw new Error("Document appears to be empty or image-only");
+  }
+
+  // LLM-only mode: skip template matching entirely
+  if (mode === "llm") {
+    return llmExtractOnly(text, onStep, abortSignal, extractionModel);
   }
 
   // Step 2: Detect vendor
@@ -185,7 +192,7 @@ export async function parseDocument(
           console.warn(`Template sanity FAILED (score=${sanity.score}):`, sanity.failures);
           onStep("sanity_failed", `Template data looks wrong. Falling back to LLM...`);
           incrementFail(tpl.id).catch(() => {});
-          return llmExtractOnly(text, onStep, abortSignal);
+          return llmExtractOnly(text, onStep, abortSignal, extractionModel);
         }
 
         // Items good -- fill metadata from nano
@@ -210,7 +217,7 @@ export async function parseDocument(
       const canRegenerate =
         matched.confidence === "domain" &&
         tpl.failCount + 1 > 3 && tpl.successCount < tpl.failCount + 1;
-      return llmPath(text, onStep, abortSignal, canRegenerate ? tpl.id : undefined);
+      return llmPath(text, onStep, abortSignal, canRegenerate ? tpl.id : undefined, extractionModel);
     }
 
     if (!usable) {
@@ -219,18 +226,18 @@ export async function parseDocument(
           (7 * 24 * 60 * 60 * 1000 - (Date.now() - tpl.lastGenerationAttempt!.getTime())) / (24 * 60 * 60 * 1000)
         );
         onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d.`);
-        return llmExtractOnly(text, onStep, abortSignal);
+        return llmExtractOnly(text, onStep, abortSignal, extractionModel);
       }
       onStep("template_retry", `Retrying template generation for ${tpl.vendorName}...`);
-      return llmPath(text, onStep, abortSignal, tpl.id);
+      return llmPath(text, onStep, abortSignal, tpl.id, extractionModel);
     }
 
     onStep("template_failed", `Template for ${tpl.vendorName} is unreliable. Using LLM...`);
-    return llmPath(text, onStep, abortSignal, tpl.id);
+    return llmPath(text, onStep, abortSignal, tpl.id, extractionModel);
   }
 
   onStep("no_template", "New vendor detected. Learning template via LLM...");
-  return llmPath(text, onStep, abortSignal);
+  return llmPath(text, onStep, abortSignal, undefined, extractionModel);
 }
 
 /**
@@ -239,16 +246,18 @@ export async function parseDocument(
 async function llmExtractOnly(
   text: string,
   onStep: StepCallback,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  modelOverride?: string
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
     throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
   }
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
-  onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
+  const effectiveModel = modelOverride ?? "gpt-5.4-nano";
+  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal);
+  const extraction = await llmExtract(llmText, abortSignal, modelOverride);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -286,7 +295,8 @@ async function llmPath(
   text: string,
   onStep: StepCallback,
   abortSignal?: AbortSignal,
-  existingTemplateId?: number
+  existingTemplateId?: number,
+  extractionModel?: string
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
     throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
@@ -294,9 +304,10 @@ async function llmPath(
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
   // Step 1: Extract everything with nano
-  onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
+  const effectiveModel = extractionModel ?? "gpt-5.4-nano";
+  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal);
+  const extraction = await llmExtract(llmText, abortSignal, extractionModel);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
