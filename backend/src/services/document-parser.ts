@@ -294,104 +294,105 @@ async function llmPath(
   };
   fixSplitTracking(docResult);
 
-  // Step 2: Build column hint for template generation
-  let columnHint = "";
-  if (extraction.items.length > 0) {
-    const firstItem = extraction.items[0];
-    const itemLine = text.split("\n").find((line) => line.includes(firstItem.partNumber));
-    if (itemLine && itemLine.includes("\t")) {
-      const cols = itemLine.split("\t");
-      const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
-      if (pnIdx >= 0) {
-        columnHint = `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
-      }
-    }
-  }
+  onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
 
-  // Step 3: Generate item-only template with mini
+  // Template generation runs in background -- don't block the response
+  learnTemplateInBackground(text, llmText, extraction, existingTemplateId, columnHintFor(text, extraction));
+
+  return docResult;
+}
+
+function columnHintFor(text: string, extraction: { items: Array<{ partNumber: string }> }): string {
+  if (extraction.items.length === 0) return "";
+  const firstItem = extraction.items[0];
+  const itemLine = text.split("\n").find((line) => line.includes(firstItem.partNumber));
+  if (!itemLine || !itemLine.includes("\t")) return "";
+  const cols = itemLine.split("\t");
+  const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
+  if (pnIdx < 0) return "";
+  return `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
+}
+
+function learnTemplateInBackground(
+  text: string,
+  llmText: string,
+  extraction: import("./template-llm.js").LlmExtraction,
+  existingTemplateId: number | undefined,
+  columnHint: string
+): void {
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {
     console.log(`[Template] no column hint generated`);
   }
-  onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
-  try {
-    const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal, undefined, columnHint);
 
-    let saved = false;
-    for (let attempt = 0; attempt < 2 && !saved; attempt++) {
-      onStep("validating_template", attempt === 0 ? "Validating template..." : "Re-validating after repair...");
-      const validation = validateTemplate(text, templateRules, extraction);
+  (async () => {
+    try {
+      const templateRules = await llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint);
 
-      if (validation.valid) {
-        await upsertTemplate(templateRules, existingTemplateId);
-        onStep("template_stored", "Template learned. Future invoices from this vendor will be faster.");
-        saved = true;
-      } else if (attempt === 0) {
-        console.warn("Template validation failed:", validation.reason);
-        onStep("repairing_template", "Template failed validation. Repairing...");
+      let saved = false;
+      for (let attempt = 0; attempt < 2 && !saved; attempt++) {
+        const validation = validateTemplate(text, templateRules, extraction);
 
-        // Try to repair the row regex
-        if (extraction.items.length > 0) {
-          const firstItem = extraction.items[0];
-          const itemContext = text.split("\n").find((line) =>
-            line.includes(firstItem.partNumber)
-          ) ?? "";
-
-          let annotation = "";
-          if (itemContext.includes("\t")) {
-            const cols = itemContext.split("\t");
-            const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
-            if (pnIdx >= 0) {
-              annotation = `\nColumn layout: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
-            }
-          }
-
-          const fixedRow = await llmRepairRowRegex({
-            expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
-            got: validation.reason ?? "0 items matched",
-            context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
-          }, abortSignal);
-
-          if (fixedRow) {
-            templateRules.lineItems.row = fixedRow;
-          }
-        }
-      } else {
-        console.warn("Template repair failed:", validation.reason);
-        onStep("template_validation_failed", `Template validation failed: ${validation.reason}`);
-      }
-    }
-
-    // Escalation: if mini failed, try Gemini
-    if (!saved && isEscalationConfigured()) {
-      onStep("escalating_template", "Escalating to Gemini 2.5 Flash...");
-      try {
-        const escalatedRules = await llmGenerateTemplate(llmText, extraction, abortSignal, ESCALATION_MODEL, columnHint);
-        const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
-        if (escalatedValidation.valid) {
-          await upsertTemplate(escalatedRules, existingTemplateId);
-          onStep("template_stored", "Template learned via Gemini. Future invoices will be faster.");
+        if (validation.valid) {
+          await upsertTemplate(templateRules, existingTemplateId);
+          console.log(`[Template] learned for ${templateRules.vendorName}`);
           saved = true;
+        } else if (attempt === 0) {
+          console.warn("[Template] validation failed:", validation.reason);
+
+          if (extraction.items.length > 0) {
+            const firstItem = extraction.items[0];
+            const itemContext = text.split("\n").find((line) => line.includes(firstItem.partNumber)) ?? "";
+
+            let annotation = "";
+            if (itemContext.includes("\t")) {
+              const cols = itemContext.split("\t");
+              const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
+              if (pnIdx >= 0) {
+                annotation = `\nColumn layout: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
+              }
+            }
+
+            const fixedRow = await llmRepairRowRegex({
+              expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
+              got: validation.reason ?? "0 items matched",
+              context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
+            });
+
+            if (fixedRow) templateRules.lineItems.row = fixedRow;
+          }
         } else {
-          console.warn("Escalated template also failed:", escalatedValidation.reason);
+          console.warn("[Template] repair failed:", validation.reason);
         }
-      } catch (err) {
-        console.warn("Escalation failed:", err);
       }
-    }
 
-    if (!saved) {
-      recordFailedAttempt(extraction.vendor, templateRules.vendorSignals).catch(() => {});
-    }
-  } catch (err) {
-    console.warn("Template generation failed:", err);
-    onStep("template_validation_failed", "Template generation failed. Extraction still succeeded.");
-    recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
-  }
+      // Escalation: if mini failed, try Gemini
+      if (!saved && isEscalationConfigured()) {
+        console.log("[Template] escalating to Gemini 2.5 Flash...");
+        try {
+          const escalatedRules = await llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint);
+          const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
+          if (escalatedValidation.valid) {
+            await upsertTemplate(escalatedRules, existingTemplateId);
+            console.log(`[Template] learned via Gemini for ${escalatedRules.vendorName}`);
+            saved = true;
+          } else {
+            console.warn("[Template] Gemini also failed:", escalatedValidation.reason);
+          }
+        } catch (err) {
+          console.warn("[Template] Gemini escalation error:", err);
+        }
+      }
 
-  onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
-  return docResult;
+      if (!saved) {
+        recordFailedAttempt(extraction.vendor, templateRules.vendorSignals).catch(() => {});
+      }
+    } catch (err) {
+      console.warn("[Template] background generation failed:", err);
+      recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
+    }
+  })();
 }
 
 function verifyTemplateInBackground(
