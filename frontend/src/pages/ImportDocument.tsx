@@ -44,11 +44,13 @@ function fmt(v: number | null): string {
 }
 
 function Row({ label, value }: { label: string; value: string | null | undefined }) {
-  if (!value && value !== "") return null;
+  const empty = !value || value === "-";
   return (
     <tr>
       <td className="pr-4 py-1 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap align-top">{label}</td>
-      <td className="py-1 text-sm text-gray-900 dark:text-gray-100 break-words">{value || "-"}</td>
+      <td className={`py-1 text-sm break-words ${empty ? "text-gray-400 dark:text-gray-500 italic" : "text-gray-900 dark:text-gray-100"}`}>
+        {empty ? "Not provided" : value}
+      </td>
     </tr>
   );
 }
