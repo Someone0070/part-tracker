@@ -236,6 +236,137 @@ function fixSplitTracking(result: DocumentResult): void {
 }
 
 /**
+ * Try to recover tax/shipping from raw text when the LLM returns 0.
+ * Scans for known summary labels near dollar amounts in the text.
+ */
+function recoverTotals(
+  text: string,
+  llmTax: number,
+  llmShipping: number
+): { tax: number; shipping: number } {
+  let tax = llmTax;
+  let shipping = llmShipping;
+
+  // Only attempt recovery if one or both are missing
+  if (tax > 0 && shipping > 0) return { tax, shipping };
+
+  // Strategy 1: look for "label: $amount" or "label $amount" on same line
+  const labelPatterns: Array<{ label: RegExp; field: "tax" | "shipping" }> = [
+    { label: /\btax(?:\s+amount)?\s*[:=]?\s*\$?([\d,]+\.?\d*)/i, field: "tax" },
+    { label: /\bship(?:ping)?(?:\s*(?:&|and)\s*handling)?\s*(?:charge)?\s*[:=]?\s*\$?([\d,]+\.?\d*)/i, field: "shipping" },
+  ];
+
+  for (const { label, field } of labelPatterns) {
+    const m = label.exec(text);
+    if (m) {
+      const val = parseFloat(m[1].replace(/,/g, ""));
+      if (!isNaN(val) && val > 0) {
+        if (field === "tax" && tax === 0) tax = val;
+        if (field === "shipping" && shipping === 0) shipping = val;
+      }
+    }
+  }
+
+  if (tax > 0 || shipping > 0) {
+    if (tax !== llmTax || shipping !== llmShipping) {
+      console.log(`[Recovery] totals recovered from text: tax=${llmTax}->${tax}, shipping=${llmShipping}->${shipping}`);
+    }
+    return { tax, shipping };
+  }
+
+  // Strategy 2: math-based -- find total and subtotal in the text, compute gap
+  // If gap > 0, look for orphan numbers that could be tax/shipping
+  const lines = text.split("\n").map((l) => l.trim());
+
+  // Find total and subtotal from labeled lines ("217.64    Sub Total" or "Total Amount    176.55")
+  let docTotal: number | null = null;
+  let docSubtotal: number | null = null;
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    const nums = line.match(/\d[\d,]*\.\d{2}/g)?.map((n) => parseFloat(n.replace(/,/g, "")));
+    if (!nums || nums.length === 0) continue;
+    const val = nums[0];
+    if (/\bsub\s*total\b/i.test(lower)) docSubtotal = val;
+    else if (/\btotal\s*(amount)?\b/i.test(lower) && !/sub/i.test(lower)) docTotal = val;
+  }
+
+  // If we don't have inline total/subtotal, compute subtotal from items
+  if (docSubtotal == null) {
+    // Can't compute without items -- caller handles items
+    return { tax, shipping };
+  }
+
+  // Also check for total on "Total\tAmount" type lines or "Total Amount    176.55"
+  if (docTotal == null) {
+    // Look for the word "total" (not "subtotal") near a number on the same line
+    for (const line of lines) {
+      if (/\btotal\b/i.test(line) && !/sub/i.test(line)) {
+        const nums = line.match(/\d[\d,]*\.\d{2}/g)?.map((n) => parseFloat(n.replace(/,/g, "")));
+        if (nums && nums.length > 0) {
+          docTotal = nums[nums.length - 1]; // take last number (often "Total Amount   176.55")
+        }
+      }
+    }
+  }
+
+  // Collect all orphan dollar amounts in the text
+  const orphanAmounts = new Set<number>();
+  for (const line of lines) {
+    if (/^\$?([\d,]+\.\d{2})$/.test(line)) {
+      orphanAmounts.add(parseFloat(line.replace(/[$,]/g, "")));
+    }
+  }
+
+  // If we still don't have a total, estimate from orphans:
+  // the total should be > subtotal and close to subtotal (within 2x)
+  if (docTotal == null && docSubtotal != null) {
+    const candidates = [...orphanAmounts].filter(
+      (n) => n > docSubtotal! && n < docSubtotal! * 2
+    );
+    if (candidates.length === 1) {
+      docTotal = candidates[0];
+      console.log(`[Recovery] inferred total=${docTotal} from orphan numbers`);
+    }
+  }
+
+  // Try to find tax/shipping among orphan numbers
+  // We know: total = subtotal + tax + shipping
+  if (docTotal != null && docTotal > docSubtotal) {
+    const gap = Math.round((docTotal - docSubtotal) * 100) / 100;
+
+    // Look for two orphan numbers that sum to the gap
+    const candidates = [...orphanAmounts].filter((n) => n > 0 && n <= gap);
+    for (let i = 0; i < candidates.length; i++) {
+      for (let j = i + 1; j < candidates.length; j++) {
+        const sum = Math.round((candidates[i] + candidates[j]) * 100) / 100;
+        if (Math.abs(sum - gap) < 0.01) {
+          // Found a pair that sums to the gap -- smaller is likely tax, larger is shipping
+          // (common pattern: shipping > tax for parts orders)
+          const [smaller, larger] = candidates[i] < candidates[j]
+            ? [candidates[i], candidates[j]]
+            : [candidates[j], candidates[i]];
+          if (tax === 0) tax = smaller;
+          if (shipping === 0) shipping = larger;
+          console.log(`[Recovery] totals from math: gap=${gap}, tax=${smaller}, shipping=${larger} (total=${docTotal}, subtotal=${docSubtotal})`);
+          return { tax, shipping };
+        }
+      }
+    }
+
+    // If only one is missing, compute it
+    if (tax === 0 && shipping > 0) {
+      tax = Math.round((gap - shipping) * 100) / 100;
+      if (tax > 0) console.log(`[Recovery] tax computed from gap: ${tax}`);
+    } else if (shipping === 0 && tax > 0) {
+      shipping = Math.round((gap - tax) * 100) / 100;
+      if (shipping > 0) console.log(`[Recovery] shipping computed from gap: ${shipping}`);
+    }
+  }
+
+  return { tax, shipping };
+}
+
+/**
  * Fill in metadata + totals from nano, then distribute tax/shipping to items.
  */
 async function fillMetadata(
@@ -256,10 +387,9 @@ async function fillMetadata(
     result.trackingNumber = fill.trackingNumber;
     result.deliveryCourier = fill.deliveryCourier;
 
-    const tax = fill.totalTax ?? 0;
-    const shipping = fill.totalShipping ?? 0;
-    if ((tax > 0 || shipping > 0) && result.items.length > 0) {
-      distributeAndNormalize(result.items, shipping, tax);
+    const recovered = recoverTotals(text, fill.totalTax ?? 0, fill.totalShipping ?? 0);
+    if ((recovered.tax > 0 || recovered.shipping > 0) && result.items.length > 0) {
+      distributeAndNormalize(result.items, recovered.shipping, recovered.tax);
     }
   } catch {
     // Non-critical -- items still extracted
@@ -404,10 +534,9 @@ async function llmExtractOnly(
     brand: item.brand,
   }));
 
-  const tax = extraction.totalTax ?? 0;
-  const shipping = extraction.totalShipping ?? 0;
-  if ((tax > 0 || shipping > 0) && items.length > 0) {
-    distributeAndNormalize(items, shipping, tax);
+  const recovered = recoverTotals(text, extraction.totalTax ?? 0, extraction.totalShipping ?? 0);
+  if ((recovered.tax > 0 || recovered.shipping > 0) && items.length > 0) {
+    distributeAndNormalize(items, recovered.shipping, recovered.tax);
   }
 
   const docResult: DocumentResult = {
@@ -454,10 +583,9 @@ async function llmPath(
     brand: item.brand,
   }));
 
-  const tax = extraction.totalTax ?? 0;
-  const shipping = extraction.totalShipping ?? 0;
-  if ((tax > 0 || shipping > 0) && items.length > 0) {
-    distributeAndNormalize(items, shipping, tax);
+  const recovered = recoverTotals(text, extraction.totalTax ?? 0, extraction.totalShipping ?? 0);
+  if ((recovered.tax > 0 || recovered.shipping > 0) && items.length > 0) {
+    distributeAndNormalize(items, recovered.shipping, recovered.tax);
   }
 
   const docResult: DocumentResult = {
