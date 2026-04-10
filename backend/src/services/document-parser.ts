@@ -149,15 +149,27 @@ async function ocrExtractText(pdfBase64: string, abortSignal?: AbortSignal): Pro
       layout_details?: Array<{ content?: string }>;
     };
 
-    const ocrText =
+    const rawOcr =
       data.md_results ??
       data.content ??
       data.text ??
       data.layout_details?.map((d) => d.content ?? "").join("\n") ??
       "";
 
-    if (ocrText.length < 20) return null;
-    return ocrText;
+    if (rawOcr.length < 20) return null;
+
+    // Strip HTML tags and markdown artifacts -- nano can't parse markup
+    const cleaned = rawOcr
+      .replace(/<[^>]+>/g, " ")       // HTML tags → space
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/^#+\s*/gm, "")        // markdown headings
+      .replace(/\[.*?\]\(.*?\)/g, "") // markdown links
+      .replace(/\s{2,}/g, " ")        // collapse whitespace
+      .trim();
+
+    return cleaned.length < 20 ? null : cleaned;
   } catch (err) {
     console.warn("[OCR] fallback failed:", err);
     return null;
@@ -264,15 +276,17 @@ export async function parseDocument(
     throw new Error("Document appears to be empty or image-only");
   }
 
-  // Check if pdf-parse produced garbled text
+  // Check if pdf-parse produced garbled text -- supplement with OCR if so
   const qualityIssue = textQualityPoor(text);
   if (qualityIssue) {
     console.log(`[OCR] pdf-parse quality issue: ${qualityIssue}, trying GLM OCR fallback...`);
-    onStep("ocr_fallback", "Re-extracting with OCR (better layout)...");
+    onStep("ocr_fallback", "Enhancing text with OCR...");
     const ocrText = await ocrExtractText(pdfBase64, abortSignal);
     if (ocrText) {
-      console.log(`[OCR] fallback succeeded (${ocrText.length} chars vs pdf-parse ${text.length} chars)`);
-      text = ocrText;
+      console.log(`[OCR] supplementing (pdf-parse=${text.length} chars, ocr=${ocrText.length} chars)`);
+      // Don't replace -- OCR may miss data (e.g. line items). Append so the LLM
+      // gets the original text (items) plus OCR text (clean metadata/totals).
+      text = text + "\n\n--- OCR-enhanced text ---\n" + ocrText;
     }
   }
 
