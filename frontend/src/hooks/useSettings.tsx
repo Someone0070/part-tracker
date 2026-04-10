@@ -4,8 +4,6 @@ import { api } from "../api/client";
 export interface AppSettings {
   crossRefEnabled: boolean;
   darkMode: boolean;
-  extractionModel: string;
-  templateModel: string;
   ebay: {
     enabled: boolean;
     connected: boolean;

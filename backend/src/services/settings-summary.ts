@@ -5,8 +5,6 @@ import { isNotNull, sql } from "drizzle-orm";
 export interface AppSettingsSummary {
   crossRefEnabled: boolean;
   darkMode: boolean;
-  extractionModel: string;
-  templateModel: string;
   ebay: {
     enabled: boolean;
     connected: boolean;
@@ -59,8 +57,6 @@ export async function getCachedSettingsSnapshot(): Promise<SettingsSnapshot | nu
   const snapshot: SettingsSnapshot = {
     crossRefEnabled: row.crossRefEnabled,
     darkMode: row.darkMode,
-    extractionModel: row.extractionModel,
-    templateModel: row.templateModel,
     ebay: {
       enabled: row.ebayEnabled,
       connected: !!row.ebayRefreshToken,

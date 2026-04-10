@@ -26,113 +26,172 @@ export interface LlmResult {
   template: ExtractionRules;
 }
 
-// --- Provider routing ---
+// --- Models ---
 
-interface ProviderConfig {
-  baseURL: string;
-  envKey: string;
-}
+export const EXTRACTION_MODEL = "gpt-5.4-nano";
+export const TEMPLATE_MODEL = "gpt-5.4-mini";
 
-const PROVIDERS: Record<string, ProviderConfig> = {
-  openrouter: { baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY" },
-  glm: { baseURL: "https://open.bigmodel.cn/api/paas/v4", envKey: "GLM_API_KEY" },
-};
+let _client: OpenAI | null = null;
 
-function getProviderForModel(modelId: string): { provider: string; model: string } {
-  if (modelId.startsWith("glm-")) {
-    return { provider: "glm", model: modelId };
+function getClient(): OpenAI {
+  if (!_client) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
+    _client = new OpenAI({ apiKey });
   }
-  // OpenRouter models have a prefix like "qwen/..."
-  return { provider: "openrouter", model: modelId };
+  return _client;
 }
-
-const _clients: Record<string, OpenAI> = {};
-
-function getClient(provider: string): OpenAI {
-  if (!_clients[provider]) {
-    const config = PROVIDERS[provider];
-    if (!config) throw new Error(`Unknown provider: ${provider}`);
-    const apiKey = process.env[config.envKey];
-    if (!apiKey) throw new Error(`${config.envKey} is not set`);
-    _clients[provider] = new OpenAI({ apiKey, baseURL: config.baseURL });
-  }
-  return _clients[provider];
-}
-
-function getClientForModel(modelId: string): { client: OpenAI; model: string } {
-  const { provider, model } = getProviderForModel(modelId);
-  return { client: getClient(provider), model };
-}
-
-// --- Model lists ---
-
-export const EXTRACTION_MODELS = [
-  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
-  { id: "glm-4.5-flash", label: "GLM 4.5 Flash", description: "Free" },
-  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M in" },
-  { id: "glm-4.5-air", label: "GLM 4.5 Air", description: "$0.20/M in" },
-  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M in" },
-  { id: "qwen/qwen3.5-9b", label: "Qwen 3.5 9B", description: "$0.05/M in" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "$0.065/M in" },
-] as const;
-
-export const TEMPLATE_MODELS = [
-  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
-  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M in" },
-  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M in" },
-  { id: "glm-5", label: "GLM 5", description: "$1.00/M in" },
-  { id: "glm-5.1", label: "GLM 5.1", description: "$1.40/M in, best" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "$0.065/M in" },
-  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B", description: "$0.16/M in" },
-] as const;
-
-export type ExtractionModelId = string;
-export type TemplateModelId = string;
-
-export const DEFAULT_EXTRACTION_MODEL = "glm-4.7-flash";
-export const DEFAULT_TEMPLATE_MODEL = "glm-4.7-flash";
-
-/** All valid model IDs for validation */
-export const ALL_MODEL_IDS = [
-  ...new Set([
-    ...EXTRACTION_MODELS.map((m) => m.id),
-    ...TEMPLATE_MODELS.map((m) => m.id),
-  ]),
-];
 
 export function isLlmConfigured(): boolean {
-  return !!process.env.OPENROUTER_API_KEY || !!process.env.GLM_API_KEY;
+  return !!process.env.OPENAI_API_KEY;
 }
+
+// --- Schemas ---
+
+const EXTRACTION_SCHEMA = {
+  name: "invoice_extraction",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      vendor: { type: "string" },
+      orderNumber: { type: ["string", "null"] },
+      orderDate: { type: ["string", "null"] },
+      technicianName: { type: ["string", "null"] },
+      trackingNumber: { type: ["string", "null"] },
+      deliveryCourier: { type: ["string", "null"] },
+      totalTax: { type: ["number", "null"] },
+      totalShipping: { type: ["number", "null"] },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            partNumber: { type: "string" },
+            partName: { type: "string" },
+            quantity: { type: "number" },
+            unitPrice: { type: ["number", "null"] },
+            brand: { type: ["string", "null"] },
+          },
+          required: ["partNumber", "partName", "quantity", "unitPrice", "brand"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["vendor", "orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping", "items"],
+    additionalProperties: false,
+  },
+};
+
+const TEMPLATE_SCHEMA = {
+  name: "invoice_template",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      vendorName: { type: "string" },
+      vendorSignals: {
+        type: "object",
+        properties: {
+          domains: { type: "array", items: { type: "string" } },
+          keywords: { type: "array", items: { type: "string" } },
+        },
+        required: ["domains", "keywords"],
+        additionalProperties: false,
+      },
+      fields: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            regex: { type: "string" },
+            group: { type: "number" },
+          },
+          required: ["name", "regex", "group"],
+          additionalProperties: false,
+        },
+      },
+      lineItems: {
+        type: "object",
+        properties: {
+          start: { type: "string" },
+          end: { type: "string" },
+          row: { type: "string" },
+        },
+        required: ["start", "end", "row"],
+        additionalProperties: false,
+      },
+      totals: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            regex: { type: "string" },
+          },
+          required: ["name", "regex"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["vendorName", "vendorSignals", "fields", "lineItems", "totals"],
+    additionalProperties: false,
+  },
+};
+
+const REPAIR_SCHEMA = {
+  name: "regex_repairs",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      repairs: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            type: { type: "string" },
+            regex: { type: "string" },
+            group: { type: "number" },
+          },
+          required: ["name", "type", "regex", "group"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["repairs"],
+    additionalProperties: false,
+  },
+};
+
+const FILL_IN_SCHEMA = {
+  name: "invoice_fill_in",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      orderNumber: { type: ["string", "null"] },
+      orderDate: { type: ["string", "null"] },
+      technicianName: { type: ["string", "null"] },
+      trackingNumber: { type: ["string", "null"] },
+      deliveryCourier: { type: ["string", "null"] },
+      totalTax: { type: ["number", "null"] },
+      totalShipping: { type: ["number", "null"] },
+    },
+    required: ["orderNumber", "orderDate", "technicianName", "trackingNumber", "deliveryCourier", "totalTax", "totalShipping"],
+    additionalProperties: false,
+  },
+};
 
 // --- Prompts ---
 
-const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals.
+const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals. Reply with structured JSON.
 
-IMPORTANT:
 - ALWAYS extract totalTax and totalShipping. Look for tax/shipping amounts even in unusual formats (stacked labels then values, summary tables, etc.)
 - For quantity, look carefully at the document -- some formats put quantity in unexpected columns
-- unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
-
-Reply with ONLY a JSON object in this exact format (no other text):
-{
-  "vendor": "string",
-  "orderNumber": "string or null",
-  "orderDate": "string or null",
-  "technicianName": "string or null",
-  "trackingNumber": "string or null",
-  "deliveryCourier": "string or null",
-  "totalTax": number or null,
-  "totalShipping": number or null,
-  "items": [
-    {
-      "partNumber": "string",
-      "partName": "string",
-      "quantity": number,
-      "unitPrice": number or null,
-      "brand": "string or null"
-    }
-  ]
-}`;
+- unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)`;
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex-based extraction templates for invoice formats. You will receive the raw document text and the extracted data. Generate regex patterns that can re-extract the same data from any invoice in the same format.
 
@@ -150,75 +209,21 @@ CRITICAL rules:
 - fields is an array of {name, regex, group} objects. Use names like "orderNumber", "orderDate", "technicianName", "trackingNumber", "courier"
 - totals is an array of {name, regex} objects. Use names "tax" and "shipping"
 
-Study the document text carefully. Pay attention to tab characters, column ordering, and line structure. The regex must actually match the text format you see.
-
-Reply with ONLY a JSON object in this exact format (no other text):
-{
-  "vendorName": "string",
-  "vendorSignals": {
-    "domains": ["string"],
-    "keywords": ["string"]
-  },
-  "fields": [
-    { "name": "string", "regex": "string", "group": number }
-  ],
-  "lineItems": {
-    "start": "regex string",
-    "end": "regex string",
-    "row": "regex string with named capture groups"
-  },
-  "totals": [
-    { "name": "tax or shipping", "regex": "string" }
-  ]
-}`;
-
-const REPAIR_SYSTEM_PROMPT = `You fix regex patterns that failed to extract values from invoice text. You are given the expected value, what the regex actually matched, and the surrounding text. Write RE2-compatible regex (no lookaheads/lookbehinds). For "field" type, use a capture group at the specified group index. For "total" type, capture the number in group 1. Study the exact text carefully -- pay attention to tabs, newlines, and column structure.
-
-Reply with ONLY a JSON object in this exact format (no other text):
-{
-  "repairs": [
-    { "name": "string", "type": "field or total", "regex": "string", "group": number }
-  ]
-}`;
-
-const FILL_IN_SYSTEM_PROMPT = `Extract order metadata from this invoice: order number, order date, technician/recipient name, tracking number, delivery courier, total tax, and total shipping. Return null for anything not found.
-
-Reply with ONLY a JSON object in this exact format (no other text):
-{
-  "orderNumber": "string or null",
-  "orderDate": "string or null",
-  "technicianName": "string or null",
-  "trackingNumber": "string or null",
-  "deliveryCourier": "string or null",
-  "totalTax": number or null,
-  "totalShipping": number or null
-}`;
-
-// --- Helpers ---
-
-/** Parse JSON from LLM response, stripping markdown fences if present */
-function parseJson<T>(raw: string): T {
-  let cleaned = raw.trim();
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
-  }
-  return JSON.parse(cleaned) as T;
-}
+Study the document text carefully. Pay attention to tab characters, column ordering, and line structure. The regex must actually match the text format you see.`;
 
 // --- API functions ---
 
 export async function llmExtract(
   text: string,
-  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<LlmExtraction> {
-  const { client, model } = getClientForModel(extractionModel);
+  const client = getClient();
   const start = Date.now();
-  console.log(`[LLM] extraction starting (${extractionModel}, ${text.length} chars)`);
+  console.log(`[LLM] extraction starting (${EXTRACTION_MODEL}, ${text.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model,
+      model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
@@ -227,20 +232,22 @@ export async function llmExtract(
           content: `Extract all purchased items from this invoice.\n\nDocument text:\n${text}`,
         },
       ],
-      response_format: { type: "json_object" },
+      response_format: {
+        type: "json_schema",
+        json_schema: EXTRACTION_SCHEMA as any,
+      },
     },
     { signal: abortSignal }
   );
 
-  const content = response.choices?.[0]?.message?.content;
+  const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
-    console.log(`[LLM] extraction EMPTY response (${elapsed}s)`, JSON.stringify(response).slice(0, 500));
+    console.log(`[LLM] extraction EMPTY response (${elapsed}s)`);
     throw new Error("Empty LLM response");
   }
 
-  const parsed = parseJson<LlmExtraction>(content);
-  if (!Array.isArray(parsed.items)) parsed.items = [];
+  const parsed = JSON.parse(content) as LlmExtraction;
   console.log(`[LLM] extraction done (${elapsed}s) -- ${parsed.items.length} items, vendor=${parsed.vendor}`);
   return parsed;
 }
@@ -248,12 +255,11 @@ export async function llmExtract(
 export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
-  templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<ExtractionRules> {
-  const { client, model } = getClientForModel(templateModel);
+  const client = getClient();
   const start = Date.now();
-  console.log(`[LLM] template generation starting (${templateModel})`);
+  console.log(`[LLM] template generation starting (${TEMPLATE_MODEL})`);
 
   const extractionSummary = JSON.stringify({
     vendor: extraction.vendor,
@@ -270,7 +276,7 @@ export async function llmGenerateTemplate(
 
   const response = await client.chat.completions.create(
     {
-      model,
+      model: TEMPLATE_MODEL,
       temperature: 0,
       messages: [
         { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
@@ -279,19 +285,22 @@ export async function llmGenerateTemplate(
           content: `Generate a reusable regex extraction template for this invoice format.\n\nExtracted data (for reference -- do NOT hardcode these values):\n${extractionSummary}\n\nRaw document text:\n${text}`,
         },
       ],
-      response_format: { type: "json_object" },
+      response_format: {
+        type: "json_schema",
+        json_schema: TEMPLATE_SCHEMA as any,
+      },
     },
     { signal: abortSignal }
   );
 
-  const content = response.choices?.[0]?.message?.content;
+  const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
-    console.log(`[LLM] template generation EMPTY response (${elapsed}s)`, JSON.stringify(response).slice(0, 500));
+    console.log(`[LLM] template generation EMPTY response (${elapsed}s)`);
     throw new Error("Empty template generation response");
   }
 
-  const parsed = parseJson<ExtractionRules>(content);
+  const parsed = JSON.parse(content) as ExtractionRules;
   console.log(`[LLM] template generation done (${elapsed}s) -- vendor=${parsed.vendorName}, ${parsed.fields?.length ?? 0} fields, ${parsed.totals?.length ?? 0} totals`);
   return parsed;
 }
@@ -306,13 +315,12 @@ interface FieldFailureInput {
 
 export async function llmRepairRegex(
   failures: FieldFailureInput[],
-  templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<Array<{ name: string; type: string; regex: string; group: number }>> {
-  const { client, model } = getClientForModel(templateModel);
+  const client = getClient();
   const start = Date.now();
   const names = failures.map((f) => f.name).join(", ");
-  console.log(`[LLM] regex repair starting (${templateModel}) -- fixing: ${names}`);
+  console.log(`[LLM] regex repair starting (${TEMPLATE_MODEL}) -- fixing: ${names}`);
 
   const failureDesc = failures.map((f) =>
     `- ${f.type} "${f.name}": expected "${f.expected}", got "${f.got}"\n  Text around value: ${JSON.stringify(f.context)}`
@@ -320,28 +328,30 @@ export async function llmRepairRegex(
 
   const response = await client.chat.completions.create(
     {
-      model,
+      model: TEMPLATE_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: REPAIR_SYSTEM_PROMPT },
+        { role: "system", content: `You fix regex patterns that failed to extract values from invoice text. You are given the expected value, what the regex actually matched, and the surrounding text. Write RE2-compatible regex (no lookaheads/lookbehinds). For "field" type, use a capture group at the specified group index. For "total" type, capture the number in group 1. Study the exact text carefully -- pay attention to tabs (\\t), newlines (\\n), and column structure.` },
         { role: "user", content: `These regex patterns failed. Fix each one:\n\n${failureDesc}` },
       ],
-      response_format: { type: "json_object" },
+      response_format: {
+        type: "json_schema",
+        json_schema: REPAIR_SCHEMA as any,
+      },
     },
     { signal: abortSignal }
   );
 
-  const content = response.choices?.[0]?.message?.content;
+  const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
     console.log(`[LLM] regex repair EMPTY response (${elapsed}s)`);
     return [];
   }
 
-  const parsed = parseJson<{ repairs: Array<{ name: string; type: string; regex: string; group: number }> }>(content);
-  const repairs = Array.isArray(parsed.repairs) ? parsed.repairs : [];
-  console.log(`[LLM] regex repair done (${elapsed}s) -- ${repairs.length} repairs`);
-  return repairs;
+  const parsed = JSON.parse(content) as { repairs: Array<{ name: string; type: string; regex: string; group: number }> };
+  console.log(`[LLM] regex repair done (${elapsed}s) -- ${parsed.repairs.length} repairs`);
+  return parsed.repairs;
 }
 
 export interface TemplateFillIn {
@@ -356,35 +366,37 @@ export interface TemplateFillIn {
 
 export async function llmFillIn(
   text: string,
-  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<TemplateFillIn> {
-  const { client, model } = getClientForModel(extractionModel);
+  const client = getClient();
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
   const start = Date.now();
-  console.log(`[LLM] fill-in starting (${extractionModel}, ${snippet.length} chars)`);
+  console.log(`[LLM] fill-in starting (${EXTRACTION_MODEL}, ${snippet.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model,
+      model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: FILL_IN_SYSTEM_PROMPT },
+        { role: "system", content: "Extract order metadata from this invoice: order number, order date, technician/recipient name, tracking number, delivery courier, total tax, and total shipping. Return null for anything not found." },
         { role: "user", content: snippet },
       ],
-      response_format: { type: "json_object" },
+      response_format: {
+        type: "json_schema",
+        json_schema: FILL_IN_SCHEMA as any,
+      },
     },
     { signal: abortSignal }
   );
 
-  const content = response.choices?.[0]?.message?.content;
+  const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
     console.log(`[LLM] fill-in EMPTY response (${elapsed}s)`);
     return { orderNumber: null, orderDate: null, technicianName: null, trackingNumber: null, deliveryCourier: null, totalTax: null, totalShipping: null };
   }
 
-  const parsed = parseJson<TemplateFillIn>(content);
+  const parsed = JSON.parse(content);
   const filled = Object.entries(parsed).filter(([, v]) => v != null).map(([k]) => k);
   console.log(`[LLM] fill-in done (${elapsed}s) -- found: ${filled.join(", ") || "nothing"}`);
   return parsed;

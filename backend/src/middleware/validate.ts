@@ -25,8 +25,6 @@ export const updateSettingsSchema = z.object({
   crossRefEnabled: z.boolean().optional(),
   darkMode: z.boolean().optional(),
   ebayEnabled: z.boolean().optional(),
-  extractionModel: z.string().max(100).optional(),
-  templateModel: z.string().max(100).optional(),
 });
 
 export const loginSchema = z.object({

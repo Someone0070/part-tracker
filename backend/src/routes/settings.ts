@@ -44,8 +44,6 @@ router.put("/", validateBody(updateSettingsSchema), async (req, res) => {
     if (req.body.crossRefEnabled !== undefined) updates.crossRefEnabled = req.body.crossRefEnabled;
     if (req.body.darkMode !== undefined) updates.darkMode = req.body.darkMode;
     if (req.body.ebayEnabled !== undefined) updates.ebayEnabled = req.body.ebayEnabled;
-    if (req.body.extractionModel !== undefined) updates.extractionModel = req.body.extractionModel;
-    if (req.body.templateModel !== undefined) updates.templateModel = req.body.templateModel;
 
     if (Object.keys(updates).length > 0) {
       await db.update(settings).set(updates).where(eq(settings.id, row.id));

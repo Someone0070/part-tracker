@@ -1,28 +1,7 @@
 import { useState, useRef, type ChangeEvent, type DragEvent } from "react";
-import { getAccessToken, refreshAccessToken, api } from "../api/client";
+import { getAccessToken, refreshAccessToken } from "../api/client";
 import { Icon } from "../components/Icon";
 import { UrlImportForm } from "../components/UrlImportForm";
-import { useSettings } from "../hooks/useSettings";
-
-const EXTRACTION_MODELS = [
-  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
-  { id: "glm-4.5-flash", label: "GLM 4.5 Flash", description: "Free" },
-  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M" },
-  { id: "glm-4.5-air", label: "GLM 4.5 Air", description: "$0.20/M" },
-  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M" },
-  { id: "qwen/qwen3.5-9b", label: "Qwen 9B", description: "$0.05/M" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "$0.065/M" },
-] as const;
-
-const TEMPLATE_MODELS = [
-  { id: "glm-4.7-flash", label: "GLM 4.7 Flash", description: "Free" },
-  { id: "glm-4.7", label: "GLM 4.7", description: "$0.60/M" },
-  { id: "glm-4.6", label: "GLM 4.6", description: "$0.60/M" },
-  { id: "glm-5", label: "GLM 5", description: "$1.00/M" },
-  { id: "glm-5.1", label: "GLM 5.1", description: "$1.40/M, best" },
-  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen Flash", description: "$0.065/M" },
-  { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 35B", description: "$0.16/M" },
-] as const;
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -75,7 +54,6 @@ function Row({ label, value }: { label: string; value: string | null | undefined
 }
 
 export function ImportDocument() {
-  const { settings, setSettings } = useSettings();
   const [result, setResult] = useState<ParseResult | null>(null);
   const [steps, setSteps] = useState<StepEntry[]>([]);
   const [parsing, setParsing] = useState(false);
@@ -85,21 +63,6 @@ export function ImportDocument() {
   const dragCounter = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const extractionModel = settings?.extractionModel ?? "qwen/qwen3.5-flash-02-23";
-  const templateModel = settings?.templateModel ?? "qwen/qwen3.5-flash-02-23";
-
-  function handleSettingChange(key: string, value: string) {
-    if (!settings) return;
-    const prev = { ...settings };
-    setSettings({ ...settings, [key]: value });
-    api("/api/settings", {
-      method: "PUT",
-      body: JSON.stringify({ [key]: value }),
-    }).catch(() => {
-      setSettings(prev);
-    });
-  }
-
   async function processFile(file: File) {
     setError("");
     setParsing(true);
@@ -108,7 +71,7 @@ export function ImportDocument() {
 
     try {
       const base64 = await fileToBase64(file);
-      const body = JSON.stringify({ document: base64, extractionModel, templateModel });
+      const body = JSON.stringify({ document: base64 });
 
       async function doRequest(token: string): Promise<Response> {
         return fetch("/api/parts/import", {
@@ -248,40 +211,6 @@ export function ImportDocument() {
           URL Import
         </button>
       </div>
-
-      {/* Model pickers */}
-      {tab === "pdf" && !result && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 dark:text-gray-400">Extraction:</span>
-            <select
-              value={extractionModel}
-              onChange={(e) => handleSettingChange("extractionModel", e.target.value)}
-              className="text-xs px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-gray-400"
-            >
-              {EXTRACTION_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} -- {m.description}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 dark:text-gray-400">Template:</span>
-            <select
-              value={templateModel}
-              onChange={(e) => handleSettingChange("templateModel", e.target.value)}
-              className="text-xs px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-gray-400"
-            >
-              {TEMPLATE_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label} -- {m.description}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      )}
 
       {error && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">

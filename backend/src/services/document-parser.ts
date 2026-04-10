@@ -2,8 +2,7 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, DEFAULT_TEMPLATE_MODEL, DEFAULT_EXTRACTION_MODEL } from "./template-llm.js";
-import type { TemplateModelId, ExtractionModelId } from "./template-llm.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -64,26 +63,11 @@ export function findBrand(text: string): string | null {
 
 const MAX_LLM_TEXT = 10_000;
 
-export interface ParseOptions {
-  onStep?: StepCallback;
-  abortSignal?: AbortSignal;
-  extractionModel?: ExtractionModelId;
-  templateModel?: TemplateModelId;
-}
-
 export async function parseDocument(
   pdfBase64: string,
-  optionsOrOnStep: ParseOptions | StepCallback = {},
+  onStep: StepCallback = () => {},
+  abortSignal?: AbortSignal
 ): Promise<DocumentResult> {
-  // Support legacy signature: parseDocument(base64, onStep, signal)
-  const opts: ParseOptions = typeof optionsOrOnStep === "function"
-    ? { onStep: optionsOrOnStep }
-    : optionsOrOnStep;
-  const onStep = opts.onStep ?? (() => {});
-  const abortSignal = opts.abortSignal;
-  const extractionModel = opts.extractionModel ?? DEFAULT_EXTRACTION_MODEL;
-  const templateModel = opts.templateModel ?? DEFAULT_TEMPLATE_MODEL;
-
   // Step 1: Extract text
   onStep("extracting_text", "Extracting text from PDF...");
   const buffer = Buffer.from(pdfBase64, "base64");
@@ -107,7 +91,6 @@ export async function parseDocument(
     const isUnreliable =
       tpl.failCount > 3 && tpl.successCount < tpl.failCount;
 
-    // Template has usable extraction rules and isn't unreliable
     if (usable && !isUnreliable) {
       onStep("vendor_matched", `Vendor matched: ${tpl.vendorName}`);
       onStep("applying_template", "Applying learned template...");
@@ -115,7 +98,6 @@ export async function parseDocument(
       const extracted = applyTemplate(text, tpl.extractionRules);
 
       if (extracted.items.length > 0) {
-        // Fill in missing fields (totals + metadata) with a cheap call
         const hasShip = extracted.items.some((i) => (i.shipCost ?? 0) > 0);
         const hasTax = extracted.items.some((i) => (i.taxPrice ?? 0) > 0);
         const missingTotals = !hasShip || !hasTax;
@@ -131,7 +113,7 @@ export async function parseDocument(
         if (missing.length > 0 && isLlmConfigured()) {
           onStep("filling_metadata", `LLM filling: ${missing.join(", ")}`);
           try {
-            const fill = await llmFillIn(text, extractionModel, abortSignal);
+            const fill = await llmFillIn(text, abortSignal);
             if (missingTotals) {
               const curTax = hasTax ? extracted.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0) : 0;
               const curShip = hasShip ? extracted.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0) : 0;
@@ -146,17 +128,15 @@ export async function parseDocument(
             if (!extracted.technicianName && fill.technicianName) extracted.technicianName = fill.technicianName;
             if (!extracted.trackingNumber && fill.trackingNumber) extracted.trackingNumber = fill.trackingNumber;
             if (!extracted.deliveryCourier && fill.deliveryCourier) extracted.deliveryCourier = fill.deliveryCourier;
-
           } catch {
-            // Non-critical -- items still extracted
+            // Non-critical
           }
         }
 
         incrementSuccess(tpl.id).catch(() => {});
 
-        // Spot-check: every 10th use, verify template output against LLM
         if (isLlmConfigured() && (tpl.successCount + 1) % 10 === 0) {
-          verifyTemplateInBackground(text, extracted, tpl.id, extractionModel);
+          verifyTemplateInBackground(text, extracted, tpl.id);
         }
 
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
@@ -171,53 +151,42 @@ export async function parseDocument(
       const canRegenerate =
         matched.confidence === "domain" &&
         tpl.failCount + 1 > 3 && tpl.successCount < tpl.failCount + 1;
-      return llmPath(text, onStep, extractionModel, templateModel, abortSignal, canRegenerate ? tpl.id : undefined);
+      return llmPath(text, onStep, abortSignal, canRegenerate ? tpl.id : undefined);
     }
 
-    // Template exists but is a stub (no usable rules) -- check cooldown
     if (!usable) {
       if (isInCooldown(tpl)) {
         const daysLeft = Math.ceil(
           (7 * 24 * 60 * 60 * 1000 - (Date.now() - tpl.lastGenerationAttempt!.getTime())) / (24 * 60 * 60 * 1000)
         );
         onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d. Using LLM extraction only...`);
-        return llmExtractOnly(text, onStep, extractionModel, abortSignal);
+        return llmExtractOnly(text, onStep, abortSignal);
       }
-      // Cooldown expired -- retry template generation
       onStep("template_retry", `Retrying template generation for ${tpl.vendorName}...`);
-      return llmPath(text, onStep, extractionModel, templateModel, abortSignal, tpl.id);
+      return llmPath(text, onStep, abortSignal, tpl.id);
     }
 
-    // Unreliable template
     onStep("template_failed", `Template for ${tpl.vendorName} is unreliable. Using LLM...`);
-    return llmPath(text, onStep, extractionModel, templateModel, abortSignal, tpl.id);
+    return llmPath(text, onStep, abortSignal, tpl.id);
   }
 
   onStep("no_template", "New vendor detected. Learning template via LLM...");
-  return llmPath(text, onStep, extractionModel, templateModel, abortSignal);
+  return llmPath(text, onStep, abortSignal);
 }
 
-/**
- * LLM extraction only -- no template generation attempt.
- * Used when a previous template generation failed and cooldown hasn't expired.
- */
 async function llmExtractOnly(
   text: string,
   onStep: StepCallback,
-  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
-    throw new Error(
-      "No extraction template for this vendor. Set GLM_API_KEY or OPENROUTER_API_KEY to enable automatic template learning."
-    );
+    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
   }
-
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
-  onStep("llm_extracting", "Extracting data with Qwen 3.5...");
+  onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, extractionModel, abortSignal);
+  const extraction = await llmExtract(llmText, abortSignal);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -252,24 +221,18 @@ async function llmExtractOnly(
 async function llmPath(
   text: string,
   onStep: StepCallback,
-  extractionModel: string,
-  templateModel: string,
   abortSignal?: AbortSignal,
   existingTemplateId?: number
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
-    throw new Error(
-      "No extraction template for this vendor. Set GLM_API_KEY or OPENROUTER_API_KEY to enable automatic template learning."
-    );
+    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
   }
-
   if (abortSignal?.aborted) throw new Error("Request cancelled");
 
-  // Step 1: Fast extraction
-  onStep("llm_extracting", "Extracting data with Qwen 3.5...");
+  onStep("llm_extracting", "Extracting data with gpt-5.4-nano...");
 
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, extractionModel, abortSignal);
+  const extraction = await llmExtract(llmText, abortSignal);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -298,27 +261,22 @@ async function llmPath(
     rawText: text,
   };
 
-  // Step 2: Generate template with the user-selected model
-  const modelLabel = templateModel.includes("flash") ? "Qwen Flash" : "Qwen 35B";
-  onStep("generating_template", `Generating reusable template with ${modelLabel}...`);
+  onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
   try {
-    const templateRules = await llmGenerateTemplate(llmText, extraction, templateModel, abortSignal);
+    const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal);
 
-    // Validate + repair loop: try up to 2 rounds
     let saved = false;
     for (let attempt = 0; attempt < 2 && !saved; attempt++) {
       onStep("validating_template", attempt === 0 ? "Validating generated template..." : "Re-validating after repair...");
       const validation = validateTemplate(text, templateRules, extraction);
 
       if (validation.valid) {
-        // Check field/total patterns
         const failures = findFieldFailures(text, templateRules, extraction);
         if (failures.length > 0) {
           onStep("repairing_template", `Repairing ${failures.length} pattern${failures.length > 1 ? "s" : ""}...`);
-          await applyRepairs(text, templateRules, failures, templateModel, abortSignal);
+          await applyRepairs(text, templateRules, failures, abortSignal);
         }
 
-        // Strip bad totals
         const subtotal = extraction.items.reduce((s, i) => s + (i.unitPrice ?? 0) * i.quantity, 0);
         templateRules.totals = templateRules.totals.filter((t) => {
           const m = safeMatch(text, t.regex, "s");
@@ -346,7 +304,7 @@ async function llmPath(
             expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
             got: "(0 items matched)",
             context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nExample item line from text:\n${itemContext}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
-          }], templateModel, abortSignal);
+          }], abortSignal);
 
           for (const repair of repairs) {
             if (repair.name === "row") {
@@ -360,22 +318,13 @@ async function llmPath(
       }
     }
 
-    // If template was never saved, record the failed attempt for cooldown
     if (!saved) {
-      recordFailedAttempt(
-        extraction.vendor,
-        templateRules.vendorSignals
-      ).catch(() => {});
+      recordFailedAttempt(extraction.vendor, templateRules.vendorSignals).catch(() => {});
     }
   } catch (err) {
     console.warn("Template generation failed:", err);
     onStep("template_validation_failed", "Template generation failed. Extraction still succeeded.");
-
-    // Record failed attempt with signals from extraction
-    recordFailedAttempt(
-      extraction.vendor,
-      { domains: [], keywords: [extraction.vendor.toLowerCase()] }
-    ).catch(() => {});
+    recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
   }
 
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
@@ -386,11 +335,10 @@ async function applyRepairs(
   text: string,
   rules: ExtractionRules,
   failures: FieldFailure[],
-  templateModel: string,
   abortSignal?: AbortSignal
 ): Promise<void> {
   try {
-    const repairs = await llmRepairRegex(failures, templateModel, abortSignal);
+    const repairs = await llmRepairRegex(failures, abortSignal);
     for (const repair of repairs) {
       const m = safeMatch(text, repair.regex, "s");
       if (!m?.[repair.group]) continue;
@@ -412,18 +360,13 @@ async function applyRepairs(
   }
 }
 
-/**
- * Fire-and-forget: run extraction and compare against template result.
- * If items diverge, increment failCount to catch silent template degradation.
- */
 function verifyTemplateInBackground(
   text: string,
   templateResult: DocumentResult,
-  templateId: number,
-  extractionModel: string
+  templateId: number
 ): void {
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  llmExtract(llmText, extractionModel).then((llm) => {
+  llmExtract(llmText).then((llm) => {
     const tplPNs = new Set(templateResult.items.map((i) => i.partNumber));
     const llmPNs = new Set(llm.items.map((i) => i.partNumber).filter(Boolean));
 
@@ -437,7 +380,5 @@ function verifyTemplateInBackground(
       console.warn(`Template ${templateId} spot-check FAILED: template=${templateResult.items.length} items, llm=${llm.items.length} items`);
       incrementFail(templateId).catch(() => {});
     }
-  }).catch(() => {
-    // Spot-check failure is non-critical
-  });
+  }).catch(() => {});
 }
