@@ -21,7 +21,7 @@ import {
 export function redactForLlm(html: string): string {
   const $ = cheerio.load(html);
   $("script, style, noscript, iframe, svg").remove();
-  $("nav, footer, [role='navigation'], [role='banner']").remove();
+  $("nav, footer, [role='navigation']").remove();
 
   let text = $.text();
 

@@ -183,7 +183,8 @@ const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document 
 - ALWAYS extract totalTax and totalShipping. Look for tax/shipping amounts even in unusual formats (stacked labels then values, summary tables, etc.)
 - For totalShipping, account for shipping discounts/credits (e.g. "Shipping: $2.99" + "Free Shipping: -$2.99" = totalShipping 0)
 - For quantity, look carefully at the document -- some formats put quantity in unexpected columns
-- unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)`;
+- unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
+- technicianName is the recipient/buyer -- look for "Ship to", "Deliver to", "Sold to", "Recipient", "Buyer", "Customer" etc.`;
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex patterns to extract LINE ITEMS from invoices. You only need to handle item rows -- metadata (order number, dates, tracking, totals) is handled separately.
 
@@ -362,7 +363,7 @@ export async function llmFillIn(
       model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract order metadata from this invoice: order number, order date, technician/recipient name, tracking number, delivery courier, total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). Return null for anything not found." },
+        { role: "system", content: "Extract order metadata from this invoice: order number, order date, recipient name (Ship to / Deliver to / Sold to / Buyer / Customer name), tracking number, delivery courier, total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). Return null for anything not found." },
         { role: "user", content: snippet },
       ],
       response_format: {
