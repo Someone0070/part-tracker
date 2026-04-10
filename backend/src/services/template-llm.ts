@@ -28,8 +28,11 @@ export interface LlmResult {
 
 // --- Model constants ---
 
-/** Model for extraction + fill-in */
-const EXTRACTION_MODEL = "qwen/qwen3.5-flash-02-23";
+/** Available extraction models (user-selectable) */
+export const EXTRACTION_MODELS = [
+  { id: "qwen/qwen3.5-9b", label: "Qwen 3.5 9B", description: "Cheapest" },
+  { id: "qwen/qwen3.5-flash-02-23", label: "Qwen 3.5 Flash", description: "Faster, smarter" },
+] as const;
 
 /** Available template generation models (user-selectable) */
 export const TEMPLATE_MODELS = [
@@ -37,8 +40,10 @@ export const TEMPLATE_MODELS = [
   { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B", description: "Smarter, 4x cost" },
 ] as const;
 
+export type ExtractionModelId = typeof EXTRACTION_MODELS[number]["id"];
 export type TemplateModelId = typeof TEMPLATE_MODELS[number]["id"];
 
+export const DEFAULT_EXTRACTION_MODEL: ExtractionModelId = "qwen/qwen3.5-flash-02-23";
 export const DEFAULT_TEMPLATE_MODEL: TemplateModelId = "qwen/qwen3.5-flash-02-23";
 
 // --- Extraction ---
@@ -163,15 +168,16 @@ function parseJson<T>(raw: string): T {
 
 export async function llmExtract(
   text: string,
+  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<LlmExtraction> {
   const client = getClient();
   const start = Date.now();
-  console.log(`[LLM] extraction starting (${EXTRACTION_MODEL}, ${text.length} chars)`);
+  console.log(`[LLM] extraction starting (${extractionModel}, ${text.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model: EXTRACTION_MODEL,
+      model: extractionModel,
       temperature: 0,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
@@ -316,16 +322,17 @@ export interface TemplateFillIn {
  */
 export async function llmFillIn(
   text: string,
+  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<TemplateFillIn> {
   const client = getClient();
   const snippet = text.length > 3000 ? text.slice(0, 3000) : text;
   const start = Date.now();
-  console.log(`[LLM] fill-in starting (${EXTRACTION_MODEL}, ${snippet.length} chars)`);
+  console.log(`[LLM] fill-in starting (${extractionModel}, ${snippet.length} chars)`);
 
   const response = await client.chat.completions.create(
     {
-      model: EXTRACTION_MODEL,
+      model: extractionModel,
       temperature: 0,
       messages: [
         { role: "system", content: FILL_IN_SYSTEM_PROMPT },

@@ -2,8 +2,8 @@ import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
 import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { validateTemplate, findFieldFailures, type FieldFailure } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, DEFAULT_TEMPLATE_MODEL } from "./template-llm.js";
-import type { TemplateModelId } from "./template-llm.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRegex, isLlmConfigured, DEFAULT_TEMPLATE_MODEL, DEFAULT_EXTRACTION_MODEL } from "./template-llm.js";
+import type { TemplateModelId, ExtractionModelId } from "./template-llm.js";
 import {
   loadAllTemplates,
   detectVendor,
@@ -67,6 +67,7 @@ const MAX_LLM_TEXT = 10_000;
 export interface ParseOptions {
   onStep?: StepCallback;
   abortSignal?: AbortSignal;
+  extractionModel?: ExtractionModelId;
   templateModel?: TemplateModelId;
 }
 
@@ -80,6 +81,7 @@ export async function parseDocument(
     : optionsOrOnStep;
   const onStep = opts.onStep ?? (() => {});
   const abortSignal = opts.abortSignal;
+  const extractionModel = opts.extractionModel ?? DEFAULT_EXTRACTION_MODEL;
   const templateModel = opts.templateModel ?? DEFAULT_TEMPLATE_MODEL;
 
   // Step 1: Extract text
@@ -129,7 +131,7 @@ export async function parseDocument(
         if (missing.length > 0 && isLlmConfigured()) {
           onStep("filling_metadata", `LLM filling: ${missing.join(", ")}`);
           try {
-            const fill = await llmFillIn(text, abortSignal);
+            const fill = await llmFillIn(text, extractionModel, abortSignal);
             if (missingTotals) {
               const curTax = hasTax ? extracted.items.reduce((s, i) => s + (i.taxPrice ?? 0) * i.quantity, 0) : 0;
               const curShip = hasShip ? extracted.items.reduce((s, i) => s + (i.shipCost ?? 0) * i.quantity, 0) : 0;
@@ -154,7 +156,7 @@ export async function parseDocument(
 
         // Spot-check: every 10th use, verify template output against LLM
         if (isLlmConfigured() && (tpl.successCount + 1) % 10 === 0) {
-          verifyTemplateInBackground(text, extracted, tpl.id);
+          verifyTemplateInBackground(text, extracted, tpl.id, extractionModel);
         }
 
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
@@ -169,7 +171,7 @@ export async function parseDocument(
       const canRegenerate =
         matched.confidence === "domain" &&
         tpl.failCount + 1 > 3 && tpl.successCount < tpl.failCount + 1;
-      return llmPath(text, onStep, templateModel, abortSignal, canRegenerate ? tpl.id : undefined);
+      return llmPath(text, onStep, extractionModel, templateModel, abortSignal, canRegenerate ? tpl.id : undefined);
     }
 
     // Template exists but is a stub (no usable rules) -- check cooldown
@@ -179,20 +181,20 @@ export async function parseDocument(
           (7 * 24 * 60 * 60 * 1000 - (Date.now() - tpl.lastGenerationAttempt!.getTime())) / (24 * 60 * 60 * 1000)
         );
         onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d. Using LLM extraction only...`);
-        return llmExtractOnly(text, onStep, abortSignal);
+        return llmExtractOnly(text, onStep, extractionModel, abortSignal);
       }
       // Cooldown expired -- retry template generation
       onStep("template_retry", `Retrying template generation for ${tpl.vendorName}...`);
-      return llmPath(text, onStep, templateModel, abortSignal, tpl.id);
+      return llmPath(text, onStep, extractionModel, templateModel, abortSignal, tpl.id);
     }
 
     // Unreliable template
     onStep("template_failed", `Template for ${tpl.vendorName} is unreliable. Using LLM...`);
-    return llmPath(text, onStep, templateModel, abortSignal, tpl.id);
+    return llmPath(text, onStep, extractionModel, templateModel, abortSignal, tpl.id);
   }
 
   onStep("no_template", "New vendor detected. Learning template via LLM...");
-  return llmPath(text, onStep, templateModel, abortSignal);
+  return llmPath(text, onStep, extractionModel, templateModel, abortSignal);
 }
 
 /**
@@ -202,6 +204,7 @@ export async function parseDocument(
 async function llmExtractOnly(
   text: string,
   onStep: StepCallback,
+  extractionModel: string,
   abortSignal?: AbortSignal
 ): Promise<DocumentResult> {
   if (!isLlmConfigured()) {
@@ -214,7 +217,7 @@ async function llmExtractOnly(
 
   onStep("llm_extracting", "Extracting data with Qwen 3.5...");
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal);
+  const extraction = await llmExtract(llmText, extractionModel, abortSignal);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -249,6 +252,7 @@ async function llmExtractOnly(
 async function llmPath(
   text: string,
   onStep: StepCallback,
+  extractionModel: string,
   templateModel: string,
   abortSignal?: AbortSignal,
   existingTemplateId?: number
@@ -265,7 +269,7 @@ async function llmPath(
   onStep("llm_extracting", "Extracting data with Qwen 3.5...");
 
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal);
+  const extraction = await llmExtract(llmText, extractionModel, abortSignal);
 
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
@@ -415,10 +419,11 @@ async function applyRepairs(
 function verifyTemplateInBackground(
   text: string,
   templateResult: DocumentResult,
-  templateId: number
+  templateId: number,
+  extractionModel: string
 ): void {
   const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  llmExtract(llmText).then((llm) => {
+  llmExtract(llmText, extractionModel).then((llm) => {
     const tplPNs = new Set(templateResult.items.map((i) => i.partNumber));
     const llmPNs = new Set(llm.items.map((i) => i.partNumber).filter(Boolean));
 
