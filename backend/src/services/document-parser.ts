@@ -367,12 +367,6 @@ function learnTemplateInBackground(
   columnHint: string,
   layout: LayoutType
 ): void {
-  // Type B (Amazon "N of:") has multiline wrapped descriptions with
-  // interleaved seller metadata -- regex can't reliably handle this.
-  if (layout === "n-of") {
-    console.log("[Template] skipping n-of layout (multiline, nano-only)");
-    return;
-  }
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {

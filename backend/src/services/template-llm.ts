@@ -251,6 +251,17 @@ const LAYOUT_HINTS: Record<string, string> = {
 - Split on \\t to identify columns. Use [^\\t]+ to match each column
 - The row regex should match one tab-separated line per item`,
 
+  "n-of": `LAYOUT TYPE: "N of:" multi-line blocks (Amazon-style).
+- Each item starts with a QUANTITY followed by "of:" -- this is the anchor
+- The description follows "of:" and may wrap across multiple lines
+- "Sold by" or "Condition:" marks the end of the description
+- The price appears as "$X.XX" on its own line after the seller/condition lines
+- lineItems.start should match "Items Ordered" header
+- lineItems.end should match "Shipping Address:" or "Item(s) Subtotal:"
+- The row regex MUST use [\\s\\S]*? (not .*) to match across line breaks
+- Pattern structure: (?<quantity>\\d+)\\s+of:\\s+(?<description>[\\s\\S]*?)(?:Sold by|Condition:)[\\s\\S]*?\\$(?<unitPrice>[\\d.]+)
+- RE2 supports lazy quantifiers (*?) -- use them to avoid overmatching`,
+
   "space-aligned": `LAYOUT TYPE: Space-aligned columns (like a table).
 - Columns are separated by 2+ spaces (NOT tabs)
 - There is a header row with column names (Quantity, Item name, Price, etc.)
