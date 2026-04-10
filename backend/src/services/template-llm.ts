@@ -206,6 +206,9 @@ Study the document text carefully. Pay attention to tab characters, column order
 
 // --- API functions ---
 
+// Models that only support temperature=1
+const TEMP_FIXED_MODELS = new Set(["gpt-5-nano", "gpt-5-mini"]);
+
 export async function llmExtract(
   text: string,
   abortSignal?: AbortSignal,
@@ -219,7 +222,7 @@ export async function llmExtract(
   const response = await client.chat.completions.create(
     {
       model,
-      temperature: 0,
+      ...(TEMP_FIXED_MODELS.has(model) ? {} : { temperature: 0 }),
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
         {
