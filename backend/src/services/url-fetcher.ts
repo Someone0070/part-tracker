@@ -270,9 +270,40 @@ async function playwrightFetch(url: string, cookies: ParsedCookie[]): Promise<Fe
   }
 }
 
+// --- Response cache (avoid repeated fetches that trigger fraud detection) ---
+
+const responseCache = new Map<string, { result: FetchResult; ts: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCached(url: string): FetchResult | null {
+  const entry = responseCache.get(url);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) {
+    responseCache.delete(url);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCache(url: string, result: FetchResult): void {
+  responseCache.set(url, { result, ts: Date.now() });
+  // Evict old entries
+  if (responseCache.size > 50) {
+    const oldest = [...responseCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+    if (oldest) responseCache.delete(oldest[0]);
+  }
+}
+
 // --- Main fetch (HTTP first, Playwright fallback) ---
 
 export async function fetchOrderPage(url: string, cookies: ParsedCookie[]): Promise<FetchResult> {
+  // Check cache first (avoids repeated hits that trigger account lockouts)
+  const cached = getCached(url);
+  if (cached) {
+    console.log(`[Fetch] Cache hit for ${url}`);
+    return cached;
+  }
+
   // Try plain HTTP first
   try {
     console.log(`[Fetch] HTTP fetch: ${url}`);
@@ -281,6 +312,7 @@ export async function fetchOrderPage(url: string, cookies: ParsedCookie[]): Prom
     // If we got a real page, use it
     if (result.statusCode >= 200 && result.statusCode < 400 && isContentful(result.html)) {
       console.log(`[Fetch] HTTP success (${result.statusCode}, ${result.html.length} chars)`);
+      setCache(url, result);
       return result;
     }
 
@@ -301,6 +333,7 @@ export async function fetchOrderPage(url: string, cookies: ParsedCookie[]): Prom
     console.log(`[Fetch] Playwright fetch: ${url}`);
     const result = await playwrightFetch(url, cookies);
     console.log(`[Fetch] Playwright success (${result.statusCode}, ${result.html.length} chars)`);
+    setCache(url, result);
     return result;
   } catch (err) {
     if (err instanceof Error && err.message.includes("timeout")) {

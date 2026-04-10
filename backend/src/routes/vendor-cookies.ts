@@ -39,6 +39,8 @@ router.get("/", requireScope("parts:read"), async (_req, res) => {
           const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
           expiryWarning = `Auth cookies expire in ${days} day${days > 1 ? "s" : ""}`;
         }
+      } else if (row.status === "active" && cookieCount > 0) {
+        expiryWarning = "No expiry data (use cookies.txt or JSON format for expiry tracking)";
       }
 
       return {
