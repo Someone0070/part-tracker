@@ -180,11 +180,14 @@ const FILL_IN_SCHEMA = {
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract purchase order data from document text. Extract ALL line items, order metadata, and totals. Reply with structured JSON.
 
+- vendor is the PLATFORM or STORE name (e.g. "Amazon", "eBay", "Encompass", "WCP"), NOT the individual seller/merchant
 - ALWAYS extract totalTax and totalShipping. Look for tax/shipping amounts even in unusual formats (stacked labels then values, summary tables, etc.)
 - For totalShipping, account for shipping discounts/credits (e.g. "Shipping: $2.99" + "Free Shipping: -$2.99" = totalShipping 0)
-- For quantity, look carefully at the document -- some formats put quantity in unexpected columns
+- For quantity, look carefully at the document -- some formats put quantity in unexpected columns. "1 of:" means quantity 1
 - unitPrice is the per-unit price, NOT the line total (line total = unitPrice * quantity)
-- technicianName is the recipient/buyer -- look for "Ship to", "Deliver to", "Sold to", "Recipient", "Buyer", "Customer" etc.`;
+- technicianName is the recipient/buyer -- look for "Ship to", "Deliver to", "Sold to", "Recipient", "Buyer", "Customer" etc.
+- For Amazon invoices, items start with "N of:" where N is the quantity. Extract the product name after "of:"
+- partNumber should be an actual product/part identifier, NOT an order number`;
 
 const TEMPLATE_SYSTEM_PROMPT = `You generate reusable regex patterns to extract LINE ITEMS from invoices. You only need to handle item rows -- metadata (order number, dates, tracking, totals) is handled separately.
 
@@ -363,7 +366,7 @@ export async function llmFillIn(
       model: EXTRACTION_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: "Extract order metadata from this invoice: order number, order date, recipient name (Ship to / Deliver to / Sold to / Buyer / Customer name), tracking number, delivery courier, total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). Return null for anything not found." },
+        { role: "system", content: "Extract order metadata from this invoice: order number, order date, recipient name (Ship to / Deliver to / Sold to / Buyer / Customer name), tracking number, delivery courier, total tax, and total shipping. For totalShipping, account for shipping discounts/credits (e.g. Shipping $2.99 + Free Shipping -$2.99 = 0). deliveryCourier is the shipping service (USPS, UPS, FedEx, Amazon/Prime, eBay Economy, etc). Return null for anything not found." },
         { role: "user", content: snippet },
       ],
       response_format: {

@@ -59,10 +59,14 @@ export function detectVendor(
   }
 
   // Tier 2: keyword match (low confidence — failures do NOT count)
+  // Keywords must be 4+ chars and match as whole words to avoid false positives
   for (const tpl of templates) {
-    if (tpl.vendorKeywords.some((k) => textLower.includes(k.toLowerCase()))) {
-      return { template: tpl, confidence: "keyword" };
-    }
+    const matched = tpl.vendorKeywords.some((k) => {
+      if (k.length < 4) return false;
+      const escaped = k.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+    });
+    if (matched) return { template: tpl, confidence: "keyword" };
   }
 
   return null;
