@@ -393,7 +393,7 @@ async function llmPath(
             type: "field" as const,
             expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
             got: "(0 items matched)",
-            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nExample item line from text:\n${itemContext}${columnAnnotation}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
+            context: `Start marker regex: ${templateRules.lineItems.start}\nEnd marker regex: ${templateRules.lineItems.end}\nCurrent row regex: ${templateRules.lineItems.row}\n\nIMPORTANT: The row regex MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...). Do NOT use positional groups.\n\nExample item line from text:\n${itemContext}${columnAnnotation}\n\nSurrounding text:\n${text.slice(Math.max(0, text.indexOf(itemContext) - 200), text.indexOf(itemContext) + itemContext.length + 200)}`,
           }], abortSignal);
 
           for (const repair of repairs) {
