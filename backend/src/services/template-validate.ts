@@ -66,7 +66,7 @@ export function validateTemplate(
 
   // Check literal fraction
   const rowFrac = literalFraction(row);
-  if (rowFrac > 0.4) {
+  if (rowFrac > 0.5) {
     return { valid: false, reason: `Row regex is ${Math.round(rowFrac * 100)}% literal: ${row}` };
   }
 

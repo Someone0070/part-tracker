@@ -262,13 +262,15 @@ const LAYOUT_HINTS: Record<string, string> = {
 - Pattern structure: (?<quantity>\\d+)\\s+of:\\s+(?<description>[\\s\\S]*?)(?:Sold by|Condition:)[\\s\\S]*?\\$(?<unitPrice>[\\d.]+)
 - RE2 supports lazy quantifiers (*?) -- use them to avoid overmatching`,
 
-  "space-aligned": `LAYOUT TYPE: Space-aligned columns (like a table).
-- Columns are separated by 2+ spaces (NOT tabs)
-- There is a header row with column names (Quantity, Item name, Price, etc.)
-- Use \\s{2,} to match column separators (not single spaces, which appear within values)
-- Each item is on a single line
+  "space-aligned": `LAYOUT TYPE: Space-aligned columns (table with header row).
+- There is a header row with column names (Quantity, Item name, Shipping service, Item price, etc.)
 - lineItems.start should match the header row
-- The row regex should match data rows below the header`,
+- lineItems.end should match text after the items (totals, payment info, page footer)
+- Items may wrap across 2 lines: line 1 has quantity + description, line 2 has item ID + shipping + price
+- If a TAB character appears before the price, use \\t to match it
+- Use [\\s\\S]*? to match across line breaks within a single item
+- Pattern structure for wrapped items: (?<quantity>\\d+)\\s+(?<description>[^\\n]+)\\n[^\\n]*\\t\\$?(?<unitPrice>[\\d.]+)
+- NEVER include vendor-specific text like "eBay Economy" in the regex -- use generic patterns like [^\\t]+ instead`,
 
   "labeled": `LAYOUT TYPE: Labeled sections with key-value pairs.
 - Fields appear as "Label: Value" or "Label\\tValue"

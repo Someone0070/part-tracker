@@ -78,7 +78,8 @@ export function detectLayoutType(text: string): LayoutType {
   // Type B: Amazon "N of:" format
   if (/\d+\s+of:/i.test(text)) return "n-of";
 
-  // Type C: Space-aligned columns (header row + data rows with 2+ space gaps)
+  // Type C: Space-aligned columns (header row + data rows aligned by spaces)
+  // eBay variant: items may wrap to 2 lines with tab before price on line 2
   const headerPatterns = [
     /quantity\s{2,}item\s*name/i,
     /item\s*#?\s{2,}description/i,
@@ -346,13 +347,21 @@ function columnHintFor(text: string, extraction: { items: Array<{ partNumber: st
   return `The item line has ${cols.length} tab-separated columns. Part number "${firstItem.partNumber}" is in column ${pnIdx + 1}.\nColumns: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
 }
 
-/** Wrap a promise with a timeout */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+/** Wrap a promise with a timeout + abort signal */
+function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  const controller = new AbortController();
   return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
-    ),
+    fn(controller.signal),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        controller.abort();
+        reject(new Error(`${label} timed out after ${ms / 1000}s`));
+      }, ms);
+    }),
   ]);
 }
 
@@ -376,7 +385,7 @@ function learnTemplateInBackground(
   const bgTask = async () => {
     try {
       const templateRules = await withTimeout(
-        llmGenerateTemplate(llmText, extraction, undefined, undefined, columnHint, layout),
+        (sig) => llmGenerateTemplate(llmText, extraction, sig, undefined, columnHint, layout),
         TEMPLATE_GEN_TIMEOUT, "mini template gen"
       );
 
@@ -405,11 +414,11 @@ function learnTemplateInBackground(
             }
 
             const fixedRow = await withTimeout(
-              llmRepairRowRegex({
+              (sig) => llmRepairRowRegex({
                 expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
                 got: validation.reason ?? "0 items matched",
                 context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
-              }),
+              }, sig),
               TEMPLATE_GEN_TIMEOUT, "row repair"
             );
 
@@ -425,7 +434,7 @@ function learnTemplateInBackground(
         console.log("[Template] escalating to Gemini 2.5 Flash...");
         try {
           const escalatedRules = await withTimeout(
-            llmGenerateTemplate(llmText, extraction, undefined, ESCALATION_MODEL, columnHint, layout),
+            (sig) => llmGenerateTemplate(llmText, extraction, sig, ESCALATION_MODEL, columnHint, layout),
             30_000, "Gemini escalation"
           );
           const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
@@ -451,7 +460,7 @@ function learnTemplateInBackground(
   };
 
   // Total timeout prevents runaway background tasks
-  withTimeout(bgTask(), TOTAL_BACKGROUND_TIMEOUT, "background template gen").catch((err) => {
+  withTimeout(() => bgTask(), TOTAL_BACKGROUND_TIMEOUT, "background template gen").catch((err) => {
     console.warn("[Template] background timed out:", err.message);
   });
 }
