@@ -7,6 +7,7 @@ import { validateBody, cookieUploadSchema, cookieUpdateSchema } from "../middlew
 import {
   parseCookiesTxt,
   normalizeDomain,
+  normalizeCookieInput,
   encryptCookies,
   decryptCookies,
   getAuthCookieExpiry,
@@ -71,13 +72,14 @@ router.post("/", requireScope("parts:write"), validateBody(cookieUploadSchema), 
     };
 
     const domain = normalizeDomain(rawDomain);
-    const cookies = parseCookiesTxt(cookiesTxt);
+    const normalized = normalizeCookieInput(cookiesTxt, domain);
+    const cookies = parseCookiesTxt(normalized);
     if (cookies.length === 0) {
-      res.status(400).json({ error: "No valid cookies found in file" });
+      res.status(400).json({ error: "No valid cookies found. Accepted formats: cookies.txt, JSON array, JSON object, or Cookie header string." });
       return;
     }
 
-    const encrypted = encryptCookies(cookiesTxt);
+    const encrypted = encryptCookies(normalized);
     const authExpiry = getAuthCookieExpiry(cookies, domain);
 
     const db = getDb();
@@ -141,13 +143,14 @@ router.put("/:id", requireScope("parts:write"), validateBody(cookieUpdateSchema)
       return;
     }
 
-    const cookies = parseCookiesTxt(cookiesTxt);
+    const normalized = normalizeCookieInput(cookiesTxt, existing.domain);
+    const cookies = parseCookiesTxt(normalized);
     if (cookies.length === 0) {
-      res.status(400).json({ error: "No valid cookies found in file" });
+      res.status(400).json({ error: "No valid cookies found. Accepted formats: cookies.txt, JSON array, JSON object, or Cookie header string." });
       return;
     }
 
-    const encrypted = encryptCookies(cookiesTxt);
+    const encrypted = encryptCookies(normalized);
     const authExpiry = getAuthCookieExpiry(cookies, existing.domain);
 
     await db

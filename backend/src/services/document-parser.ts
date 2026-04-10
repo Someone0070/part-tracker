@@ -309,6 +309,11 @@ async function llmPath(
   }
 
   // Step 3: Generate item-only template with mini
+  if (columnHint) {
+    console.log(`[Template] column hint:\n${columnHint}`);
+  } else {
+    console.log(`[Template] no column hint generated`);
+  }
   onStep("generating_template", "Generating reusable template with gpt-5.4-mini...");
   try {
     const templateRules = await llmGenerateTemplate(llmText, extraction, abortSignal, undefined, columnHint);

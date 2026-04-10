@@ -1,6 +1,6 @@
 import RE2 from "re2";
 import type { ExtractionRules } from "./template-types.js";
-import { applyTemplate } from "./template-apply.js";
+import { applyTemplate, safeMatch } from "./template-apply.js";
 import type { LlmExtraction } from "./template-llm.js";
 
 export interface ValidationResult {
@@ -74,9 +74,24 @@ export function validateTemplate(
   const result = applyTemplate(text, rules);
 
   if (result.items.length < extraction.items.length) {
+    // Diagnose why extraction failed
+    const startMatch = safeMatch(text, rules.lineItems.start, "i");
+    let diag = `start=${startMatch ? "MATCHED" : "NO_MATCH"}`;
+    if (startMatch && startMatch.index != null) {
+      const afterStart = text.slice(startMatch.index + startMatch[0].length);
+      const endMatch = safeMatch(afterStart, rules.lineItems.end, "i");
+      const tableText = endMatch?.index != null ? afterStart.slice(0, endMatch.index) : afterStart;
+      diag += ` end=${endMatch ? "MATCHED" : "NO_MATCH"} tableLen=${tableText.length}`;
+      // Show first 200 chars of table region
+      const preview = tableText.slice(0, 200).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+      diag += ` tablePreview="${preview}"`;
+    }
+    console.warn(`[Template] extraction diagnostic: ${diag}`);
+    console.warn(`[Template] patterns: start=/${rules.lineItems.start}/ end=/${rules.lineItems.end}/ row=/${rules.lineItems.row}/`);
+
     return {
       valid: false,
-      reason: `Template extracted ${result.items.length} items, LLM extracted ${extraction.items.length}`,
+      reason: `Template extracted ${result.items.length} items, LLM extracted ${extraction.items.length} [${diag}]`,
     };
   }
 

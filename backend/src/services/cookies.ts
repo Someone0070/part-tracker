@@ -87,6 +87,98 @@ export function normalizeDomain(domain: string): string {
   return domain.toLowerCase().replace(/^\./, "").replace(/^www\./, "");
 }
 
+/**
+ * Detect cookie format and normalize to Netscape cookies.txt.
+ * Supports: Netscape cookies.txt, JSON array (EditThisCookie/cookie-editor),
+ * JSON object ({name: value}), and Cookie header string (name=value; ...).
+ */
+export function normalizeCookieInput(raw: string, fallbackDomain?: string): string {
+  const trimmed = raw.trim();
+
+  // Already Netscape cookies.txt? (has tab-separated lines with 7+ fields)
+  const lines = trimmed.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+  if (lines.length > 0 && lines[0].split("\t").length >= 7) {
+    return trimmed;
+  }
+
+  // Try JSON
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      let parsed = JSON.parse(trimmed);
+
+      // JSON object {name: value} -- simple key-value map
+      if (!Array.isArray(parsed) && typeof parsed === "object") {
+        const entries = Object.entries(parsed as Record<string, unknown>);
+        if (entries.length > 0 && entries.every(([, v]) => typeof v === "string" || typeof v === "number")) {
+          parsed = entries.map(([name, value]) => ({
+            name,
+            value: String(value),
+            domain: fallbackDomain ?? "unknown.com",
+            path: "/",
+          }));
+        } else if (entries.length > 0) {
+          // Might be a single cookie object like {name, value, domain, ...}
+          if ("name" in parsed && "value" in parsed) {
+            parsed = [parsed];
+          }
+        }
+      }
+
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return jsonCookiesToNetscape(parsed, fallbackDomain);
+      }
+    } catch {
+      // Not valid JSON, fall through
+    }
+  }
+
+  // Cookie header string: name=value; name2=value2
+  if (trimmed.includes("=") && !trimmed.includes("\t")) {
+    const pairs = trimmed.split(/;\s*/);
+    const cookieLines: string[] = [];
+    const domain = fallbackDomain ?? "unknown.com";
+    for (const pair of pairs) {
+      const eqIdx = pair.indexOf("=");
+      if (eqIdx < 1) continue;
+      const name = pair.slice(0, eqIdx).trim();
+      const value = pair.slice(eqIdx + 1).trim();
+      if (!name) continue;
+      cookieLines.push(`.${domain}\tTRUE\t/\tFALSE\t0\t${name}\t${value}`);
+    }
+    if (cookieLines.length > 0) {
+      return `# Netscape HTTP Cookie File\n${cookieLines.join("\n")}`;
+    }
+  }
+
+  // Nothing matched -- return as-is and let parseCookiesTxt reject it
+  return trimmed;
+}
+
+function jsonCookiesToNetscape(cookies: unknown[], fallbackDomain?: string): string {
+  const lines: string[] = ["# Netscape HTTP Cookie File"];
+  for (const c of cookies) {
+    if (typeof c !== "object" || c === null) continue;
+    const cookie = c as Record<string, unknown>;
+    const name = String(cookie.name ?? "");
+    const value = String(cookie.value ?? "");
+    if (!name) continue;
+
+    const domain = String(cookie.domain ?? fallbackDomain ?? "unknown.com");
+    const path = String(cookie.path ?? "/");
+    const secure = cookie.secure === true || cookie.secure === "true" ? "TRUE" : "FALSE";
+    const httpOnly = cookie.httpOnly === true || cookie.httpOnly === "true";
+    const expiry = typeof cookie.expirationDate === "number"
+      ? Math.round(cookie.expirationDate)
+      : typeof cookie.expires === "number"
+        ? Math.round(cookie.expires)
+        : 0;
+
+    const prefix = httpOnly ? "#HttpOnly_" : "";
+    lines.push(`${prefix}${domain}\tTRUE\t${path}\t${secure}\t${expiry}\t${name}\t${value}`);
+  }
+  return lines.join("\n");
+}
+
 export function encryptCookies(cookiesTxt: string): string {
   return encrypt(cookiesTxt);
 }

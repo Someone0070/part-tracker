@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from "react";
+import { useState, useEffect, useRef, useCallback, type ChangeEvent } from "react";
 import { api } from "../api/client";
 import { Icon } from "./Icon";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -31,6 +31,109 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function PasteModal({ vendor, onDone, onClose }: {
+  vendor: { id: number | null; vendorName: string; domain: string };
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Focus textarea on mount so paste works immediately
+    textareaRef.current?.focus();
+  }, []);
+
+  const submitCookies = useCallback(async (text: string) => {
+    if (!text.trim() || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (vendor.id) {
+        await api(`/api/vendor-cookies/${vendor.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ cookiesTxt: text }),
+        });
+      } else {
+        await api("/api/vendor-cookies", {
+          method: "POST",
+          body: JSON.stringify({ vendorName: vendor.vendorName, domain: vendor.domain, cookiesTxt: text }),
+        });
+      }
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save cookies");
+      setSaving(false);
+    }
+  }, [vendor, saving, onDone]);
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    e.preventDefault();
+    const text = e.clipboardData.getData("text");
+    if (text.trim()) submitCookies(text);
+  }
+
+  function handleFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    file.text().then((text) => submitCookies(text));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg w-full max-w-md mx-4 p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            Add cookies for {vendor.vendorName}
+          </h3>
+          <button type="button" onClick={onClose} className="p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
+            {error}
+          </div>
+        )}
+
+        {saving ? (
+          <div className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+            Saving cookies...
+          </div>
+        ) : (
+          <>
+            <textarea
+              ref={textareaRef}
+              onPaste={handlePaste}
+              placeholder="Paste cookies here (any format: cookies.txt, JSON, header string, or file)"
+              rows={4}
+              className="w-full px-3 py-2 text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 resize-none"
+              style={{ caretColor: "transparent" }}
+            />
+            <div className="flex items-center justify-between mt-3">
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                Paste to auto-save. Cookies are encrypted immediately.
+              </p>
+              <input ref={fileInputRef} type="file" accept=".txt,.json" className="sr-only" onChange={handleFileSelected} />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <Icon name="upload_file" size={14} />
+                File
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function CookieManager() {
   const [vendors, setVendors] = useState<VendorCookie[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,8 +142,7 @@ export function CookieManager() {
   const [customDomain, setCustomDomain] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<VendorCookie | null>(null);
   const [error, setError] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploadTargetId, setUploadTargetId] = useState<number | null>(null);
+  const [pasteTarget, setPasteTarget] = useState<{ id: number | null; vendorName: string; domain: string } | null>(null);
 
   async function loadVendors() {
     try {
@@ -55,46 +157,13 @@ export function CookieManager() {
 
   useEffect(() => { loadVendors(); }, []);
 
-  async function handleFileUpload(vendorId: number | null, vendorName: string, domain: string, file: File) {
-    setError("");
-    const text = await file.text();
-    try {
-      if (vendorId) {
-        await api(`/api/vendor-cookies/${vendorId}`, {
-          method: "PUT",
-          body: JSON.stringify({ cookiesTxt: text }),
-        });
-      } else {
-        await api("/api/vendor-cookies", {
-          method: "POST",
-          body: JSON.stringify({ vendorName, domain, cookiesTxt: text }),
-        });
-      }
-      await loadVendors();
-      setShowAddCustom(false);
-      setCustomName("");
-      setCustomDomain("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    }
+  function openPasteForVendor(v: VendorCookie) {
+    setPasteTarget({ id: v.id, vendorName: v.vendorName, domain: v.domain });
   }
 
-  function triggerFileUpload(vendorId: number | null) {
-    setUploadTargetId(vendorId);
-    fileInputRef.current?.click();
-  }
-
-  function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (uploadTargetId !== null) {
-      const vendor = vendors.find((v) => v.id === uploadTargetId);
-      if (vendor) handleFileUpload(vendor.id, vendor.vendorName, vendor.domain, file);
-    } else if (showAddCustom && customName && customDomain) {
-      handleFileUpload(null, customName, customDomain, file);
-    }
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  function openPasteForCustom() {
+    if (!customName || !customDomain) return;
+    setPasteTarget({ id: null, vendorName: customName, domain: customDomain });
   }
 
   async function handleDelete(vendor: VendorCookie) {
@@ -111,8 +180,6 @@ export function CookieManager() {
 
   return (
     <div className="space-y-3">
-      <input ref={fileInputRef} type="file" accept=".txt" className="sr-only" onChange={onFileSelected} />
-
       {error && (
         <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
           {error}
@@ -135,11 +202,11 @@ export function CookieManager() {
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => triggerFileUpload(v.id)}
+              onClick={() => openPasteForVendor(v)}
               className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
-              title="Upload cookies.txt"
+              title="Add cookies (paste or upload)"
             >
-              <Icon name="upload" size={16} />
+              <Icon name="content_paste" size={16} />
             </button>
             <button
               type="button"
@@ -181,13 +248,11 @@ export function CookieManager() {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => {
-                if (customName && customDomain) triggerFileUpload(null);
-              }}
+              onClick={openPasteForCustom}
               disabled={!customName || !customDomain}
               className="px-3 py-1.5 text-xs rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 disabled:opacity-40"
             >
-              Upload cookies.txt
+              Add cookies
             </button>
             <button
               type="button"
@@ -198,6 +263,20 @@ export function CookieManager() {
             </button>
           </div>
         </div>
+      )}
+
+      {pasteTarget && (
+        <PasteModal
+          vendor={pasteTarget}
+          onDone={() => {
+            setPasteTarget(null);
+            setShowAddCustom(false);
+            setCustomName("");
+            setCustomDomain("");
+            loadVendors();
+          }}
+          onClose={() => setPasteTarget(null)}
+        />
       )}
 
       <ConfirmDialog
