@@ -25,7 +25,7 @@ export function redactForLlm(html: string): string {
   text = text
     .replace(/\b[A-Z][a-z]+ [A-Z][a-z]+\s*\n\s*\d+\s+[A-Z]/g, "[NAME]\n[ADDRESS]")
     .replace(/[\w.-]+@[\w.-]+\.\w{2,}/g, "[EMAIL]")
-    .replace(/\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g, "[PHONE]")
+    .replace(/\b(?!\d{3}-\d{7}-\d{7})\d{3}[-.]?\d{3}[-.]?\d{4}\b/g, "[PHONE]")
     .replace(/\b\d+\s+[A-Z][a-z]+\s+(St|Ave|Rd|Blvd|Dr|Ln|Ct|Way|Pl|Cir|Street|Avenue|Road|Drive|Lane|Boulevard)\b[^,]*/gi, "[ADDRESS]")
     .replace(/ending in \d{4}/gi, "ending in [XXXX]");
 
