@@ -7,7 +7,7 @@ import { loadAllActiveTemplates, detectVendorVersions, hasUsableRules, isInCoold
 import { recordResult, needsSpotCheck, createTemplateVersion, type RecentResult } from "./template-lifecycle.js";
 import { determineConfidenceTier, validateTemplate } from "./template-validate.js";
 import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairField, isLlmConfigured, type LlmExtraction } from "./template-llm.js";
-import { applyTemplate, distributeAndNormalize } from "./template-apply.js";
+import { applyTemplate, distributeAndNormalize, safeMatch } from "./template-apply.js";
 import { checkExtraction } from "./extraction-sanity.js";
 import { deriveVendorKey } from "./template-types.js";
 import { loadActivePrefixes, buildPrefixRegex, recordPrefixHit, learnPrefixes } from "./learned-prefixes.js";
@@ -864,11 +864,23 @@ function learnTemplateInBackground(
         return;
       }
 
+      // Diagnostic: log what GPT 5.4 generated and test application
+      const diagResult = applyTemplate(rawText, templateRules);
+      const startMatch = safeMatch(rawText, templateRules.lineItems.start, "i");
+      const afterStart = startMatch?.index != null ? rawText.slice(startMatch.index + startMatch[0].length) : "";
+      const endMatch = safeMatch(afterStart, templateRules.lineItems.end, "i");
+      const tableText = endMatch?.index != null ? afterStart.slice(0, endMatch.index) : afterStart;
+      console.log(`[Template] diagnostic: start=${startMatch ? "MATCHED" : "MISSED"} end=${endMatch ? "MATCHED" : "MISSED"} tableLen=${tableText.length} items=${diagResult.items.length}`);
+      console.log(`[Template] patterns: start=${templateRules.lineItems.start} end=${templateRules.lineItems.end} row=${templateRules.lineItems.row}`);
+      if (diagResult.items.length === 0 && tableText.length > 0) {
+        console.log(`[Template] tablePreview: ${JSON.stringify(tableText.slice(0, 300))}`);
+      }
+
       // Validate against nano extraction
       const validation = validateTemplate(rawText, templateRules, extraction, tier);
 
       // Learn prefixes from template vs nano comparison (regardless of validation result)
-      const templateResult = applyTemplate(rawText, templateRules);
+      const templateResult = diagResult;
       if (templateResult.items.length > 0) {
         const vendorName = templateRules.vendorName ?? "unknown";
         learnPrefixes(templateResult.items, extraction.items, vendorName).catch((err) => {
