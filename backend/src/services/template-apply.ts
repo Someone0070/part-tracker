@@ -45,7 +45,7 @@ export function safeMatch(text: string, pattern: string, flags = ""): RegExpMatc
 function extractRows(tableText: string, rowPattern: string): ExtractedItem[] {
   const items: ExtractedItem[] = [];
   try {
-    const rowRe = new RE2(rowPattern, "g");
+    const rowRe = new RE2(rowPattern, "gm");
     let match;
     while ((match = rowRe.exec(tableText)) !== null) {
       const g = match.groups as Record<string, string> | undefined;
