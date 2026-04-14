@@ -10,6 +10,7 @@ import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairField, isLlmConfig
 import { applyTemplate, distributeAndNormalize } from "./template-apply.js";
 import { checkExtraction } from "./extraction-sanity.js";
 import { deriveVendorKey } from "./template-types.js";
+import { loadActivePrefixes, buildPrefixRegex, recordPrefixHit, learnPrefixes } from "./learned-prefixes.js";
 import RE2 from "re2";
 
 export type { DocumentResult, ExtractedItem };
@@ -234,8 +235,9 @@ function fixSplitTracking(result: DocumentResult): void {
 
 /**
  * Sanitize extraction results -- catch obviously wrong values from weaker models.
+ * Uses learned prefixes (cached, activated at hit_count >= 3) combined with hardcoded list.
  */
-function sanitizeExtraction(result: DocumentResult): void {
+async function sanitizeExtraction(result: DocumentResult): Promise<void> {
   // Tracking number validation: must be 10+ chars and look like a real tracking number
   if (result.trackingNumber) {
     const t = result.trackingNumber.trim();
@@ -270,14 +272,25 @@ function sanitizeExtraction(result: DocumentResult): void {
     }
   }
 
-  // Part name: strip shipment status prefixes that get captured by sloppy regexes
-  const STATUS_PREFIXES = /^(SHIPPED|B\/O|BACKORDERED|BACK\s*ORDER(?:ED)?|IN\s*STOCK|OUT\s*OF\s*STOCK|PENDING|ON\s*ORDER)\s+/i;
+  // Part name: strip shipment status prefixes (hardcoded + learned from DB)
+  let activeLearned: string[] = [];
+  try {
+    activeLearned = await loadActivePrefixes();
+  } catch {
+    // DB unavailable -- fall through to hardcoded-only regex
+  }
+  const prefixRegex = buildPrefixRegex(activeLearned);
   for (const item of result.items) {
-    if (item.partName && STATUS_PREFIXES.test(item.partName)) {
-      const cleaned = item.partName.replace(STATUS_PREFIXES, "").trim();
+    if (item.partName && prefixRegex.test(item.partName)) {
+      const match = item.partName.match(prefixRegex);
+      const cleaned = item.partName.replace(prefixRegex, "").trim();
       if (cleaned.length > 0) {
-        console.log(`[Sanitize] stripped status prefix from partName "${item.partName}" -> "${cleaned}"`);
+        console.log(`[Sanitize] stripped prefix from partName "${item.partName}" -> "${cleaned}"`);
         item.partName = cleaned;
+        // Batch the hit count update
+        if (match?.[1]) {
+          recordPrefixHit(match[1].toUpperCase());
+        }
       }
     }
   }
@@ -460,11 +473,11 @@ const TOTAL_BACKGROUND_TIMEOUT = 60_000;  // 60s total for entire background pro
 
 // --- Helper: build DocumentResult from LlmExtraction ---
 
-function buildDocResult(
+async function buildDocResult(
   extraction: LlmExtraction,
   cleanText: string,
   rawText: string
-): DocumentResult {
+): Promise<DocumentResult> {
   const items: ExtractedItem[] = extraction.items.map((item) => ({
     partNumber: item.partNumber,
     partName: item.partName,
@@ -492,7 +505,7 @@ function buildDocResult(
     rawText,
   };
   fixSplitTracking(docResult);
-  sanitizeExtraction(docResult);
+  await sanitizeExtraction(docResult);
 
   return docResult;
 }
@@ -638,7 +651,7 @@ export async function parseDocument(
         const matchedRows = getMatchedRowLines(rawText, tpl.extractionRules);
         await fillMetadata(extracted, cleanText, rawText, matchedRows, onStep, abortSignal);
         fixSplitTracking(extracted);
-        sanitizeExtraction(extracted);
+        await sanitizeExtraction(extracted);
 
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
@@ -656,6 +669,12 @@ export async function parseDocument(
 
           try {
             const nanoExtraction = await llmExtract(llmText, abortSignal);
+
+            // Learn prefixes from spot-check comparison
+            learnPrefixes(extracted.items, nanoExtraction.items, tpl.vendorName).catch((err) => {
+              console.warn("[SpotCheck] prefix learning failed:", err);
+            });
+
             const tplPNs = new Set(extracted.items.map((i) => i.partNumber));
             const nanoPNs = nanoExtraction.items.map((i) => i.partNumber).filter(Boolean);
 
@@ -672,7 +691,7 @@ export async function parseDocument(
               recordResult(tpl.id, false).catch(() => {});
 
               // Serve nano result instead
-              const nanoResult = buildDocResult(nanoExtraction, cleanText, rawText);
+              const nanoResult = await buildDocResult(nanoExtraction, cleanText, rawText);
               onStep("done", `${nanoResult.items.length} item${nanoResult.items.length !== 1 ? "s" : ""} extracted`);
 
               // Trigger background repair/regen against the failed template
@@ -694,7 +713,7 @@ export async function parseDocument(
         const matchedRows = getMatchedRowLines(rawText, tpl.extractionRules);
         await fillMetadata(extracted, cleanText, rawText, matchedRows, onStep, abortSignal);
         fixSplitTracking(extracted);
-        sanitizeExtraction(extracted);
+        await sanitizeExtraction(extracted);
 
         onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
         return extracted;
@@ -734,7 +753,7 @@ async function llmExtractOnly(
   const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
   const extraction = await llmExtract(llmText, abortSignal, modelOverride);
 
-  const docResult = buildDocResult(extraction, cleanText, rawText);
+  const docResult = await buildDocResult(extraction, cleanText, rawText);
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
   return docResult;
 }
@@ -758,7 +777,7 @@ async function llmFallback(
   const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
   const extraction = await llmExtract(llmText, abortSignal, extractionModel);
 
-  const docResult = buildDocResult(extraction, cleanText, rawText);
+  const docResult = await buildDocResult(extraction, cleanText, rawText);
   onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
 
   // Template generation runs in background -- don't block the response
@@ -804,6 +823,16 @@ function learnTemplateInBackground(
 
       // Validate against nano extraction
       const validation = validateTemplate(rawText, templateRules, extraction, tier);
+
+      // Learn prefixes from template vs nano comparison (regardless of validation result)
+      const templateResult = applyTemplate(rawText, templateRules);
+      if (templateResult.items.length > 0) {
+        const vendorName = templateRules.vendorName ?? "unknown";
+        learnPrefixes(templateResult.items, extraction.items, vendorName).catch((err) => {
+          console.warn("[Template] prefix learning failed:", err);
+        });
+      }
+
       if (validation.valid) {
         const vendorKey = deriveVendorKey(templateRules.vendorSignals);
         const newId = await createTemplateVersion(vendorKey, templateRules);
@@ -834,6 +863,11 @@ function triggerBackgroundRepairOrRegen(
 ): void {
   const bgTask = async () => {
     try {
+      // Learn prefixes from template vs nano comparison
+      learnPrefixes(templateResult.items, nanoExtraction.items, template.vendorName).catch((err) => {
+        console.warn("[Repair] prefix learning failed:", err);
+      });
+
       // Skip if template is in cooldown
       if (isInCooldown(template)) {
         console.log(`[Repair] ${template.vendorName} in cooldown, skipping`);

@@ -118,6 +118,14 @@ export const vendorTemplates = pgTable("vendor_templates", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const learnedPrefixes = pgTable("learned_prefixes", {
+  id: serial("id").primaryKey(),
+  prefix: text("prefix").notNull().unique(),
+  sourceVendor: text("source_vendor").notNull(),
+  hitCount: integer("hit_count").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const vendorCookies = pgTable("vendor_cookies", {
   id: serial("id").primaryKey(),
   vendorName: text("vendor_name").notNull(),
