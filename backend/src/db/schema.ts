@@ -103,16 +103,27 @@ export const sessions = pgTable("sessions", {
 
 export const vendorTemplates = pgTable("vendor_templates", {
   id: serial("id").primaryKey(),
-  vendorKey: text("vendor_key").notNull().unique(),
+  vendorKey: text("vendor_key").notNull(),
   vendorName: text("vendor_name").notNull(),
   vendorDomains: text("vendor_domains").array().notNull().default(sql`'{}'::text[]`),
   vendorKeywords: text("vendor_keywords").array().notNull().default(sql`'{}'::text[]`),
   extractionRules: text("extraction_rules").notNull(),
+  version: integer("version").notNull().default(1),
+  recentResults: text("recent_results").notNull().default("[]"),
+  status: text("status").notNull().default("active"),
   successCount: integer("success_count").notNull().default(0),
   failCount: integer("fail_count").notNull().default(0),
   lastGenerationAttempt: timestamp("last_generation_attempt", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const learnedPrefixes = pgTable("learned_prefixes", {
+  id: serial("id").primaryKey(),
+  prefix: text("prefix").notNull().unique(),
+  sourceVendor: text("source_vendor").notNull(),
+  hitCount: integer("hit_count").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const vendorCookies = pgTable("vendor_cookies", {

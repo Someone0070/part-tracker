@@ -64,6 +64,20 @@
       "when": 1775782800000,
       "tag": "0008_add_extraction_model",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1775869200000,
+      "tag": "0009_template_versioning",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1775955600000,
+      "tag": "0010_learned_prefixes",
+      "breakpoints": true
     }
   ]
 }
