@@ -216,6 +216,40 @@ export function detectLayoutType(text: string): LayoutType {
 }
 
 /**
+ * Recover tracking number from raw text when LLM returns null.
+ * Scans for "Tracking" labels near numeric strings that look like tracking numbers.
+ */
+function recoverTracking(rawText: string, currentTracking: string | null | undefined): string | null {
+  if (currentTracking) return currentTracking;
+
+  const lines = rawText.split("\n");
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (!lower.includes("track")) continue;
+
+    // Extract all numeric sequences of 10+ digits from this line
+    const nums = line.match(/\b\d{10,30}\b/g);
+    if (nums && nums.length > 0) {
+      console.log(`[Recovery] tracking recovered from text: "${nums[0]}"`);
+      return nums[0];
+    }
+
+    // Also check next line (tracking number might be on the line after the label)
+    const idx = lines.indexOf(line);
+    if (idx >= 0 && idx + 1 < lines.length) {
+      const nextLine = lines[idx + 1].trim();
+      const nextNums = nextLine.match(/\b\d{10,30}\b/g);
+      if (nextNums && nextNums.length > 0) {
+        console.log(`[Recovery] tracking recovered from next line: "${nextNums[0]}"`);
+        return nextNums[0];
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Fix tracking numbers that got split across PDF lines.
  */
 function fixSplitTracking(result: DocumentResult): void {
@@ -499,7 +533,7 @@ async function buildDocResult(
     orderNumber: extraction.orderNumber,
     orderDate: extraction.orderDate,
     technicianName: extraction.technicianName,
-    trackingNumber: extraction.trackingNumber,
+    trackingNumber: recoverTracking(rawText, extraction.trackingNumber),
     deliveryCourier: extraction.deliveryCourier,
     items,
     rawText,
@@ -536,7 +570,7 @@ async function fillMetadata(
     result.orderNumber = fill.orderNumber;
     result.orderDate = fill.orderDate;
     result.technicianName = fill.technicianName;
-    result.trackingNumber = fill.trackingNumber;
+    result.trackingNumber = recoverTracking(rawText, fill.trackingNumber);
     result.deliveryCourier = fill.deliveryCourier;
 
     // Use rawText for recovery -- subtotal/total may be in boilerplate
