@@ -13,13 +13,15 @@ router.get("/", async (_req, res) => {
         id: vendorTemplates.id,
         vendorKey: vendorTemplates.vendorKey,
         vendorName: vendorTemplates.vendorName,
+        version: vendorTemplates.version,
+        status: vendorTemplates.status,
         successCount: vendorTemplates.successCount,
         failCount: vendorTemplates.failCount,
         createdAt: vendorTemplates.createdAt,
         updatedAt: vendorTemplates.updatedAt,
       })
       .from(vendorTemplates)
-      .orderBy(vendorTemplates.vendorName);
+      .orderBy(vendorTemplates.vendorName, vendorTemplates.version);
 
     res.json(rows);
   } catch (err) {
