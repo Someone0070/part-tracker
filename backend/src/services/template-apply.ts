@@ -45,9 +45,12 @@ export function safeMatch(text: string, pattern: string, flags = ""): RegExpMatc
 function extractRows(tableText: string, rowPattern: string): ExtractedItem[] {
   const items: ExtractedItem[] = [];
   try {
+    // Normalize spaces around tabs so LLM-generated regexes don't break on
+    // trailing/leading whitespace in tab-delimited columns (e.g. "1 \tWR78X...")
+    const normalized = tableText.replace(/ *\t+ */g, "\t");
     const rowRe = new RE2(rowPattern, "gm");
     let match;
-    while ((match = rowRe.exec(tableText)) !== null) {
+    while ((match = rowRe.exec(normalized)) !== null) {
       const g = match.groups as Record<string, string> | undefined;
       if (!g) continue;
       if (/payment/i.test(match[0])) continue;
