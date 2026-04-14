@@ -52,6 +52,9 @@ export interface VendorTemplate {
   vendorDomains: string[];
   vendorKeywords: string[];
   extractionRules: ExtractionRules;
+  version: number;
+  status: string;
+  recentResults: string;
   successCount: number;
   failCount: number;
   lastGenerationAttempt: Date | null;
@@ -60,6 +63,12 @@ export interface VendorTemplate {
 export interface VendorMatch {
   template: VendorTemplate;
   confidence: "domain" | "keyword";
+}
+
+export interface VendorMatchResult {
+  vendorKey: string;
+  confidence: "domain" | "keyword";
+  templates: VendorTemplate[];
 }
 
 export type StepCallback = (step: string, message: string) => void;
