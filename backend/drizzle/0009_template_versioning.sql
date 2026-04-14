@@ -1,5 +1,7 @@
 -- Step 1: Drop old unique constraint on vendor_key
-ALTER TABLE "vendor_templates" DROP CONSTRAINT "vendor_templates_vendor_key_unique";
+-- Inline UNIQUE creates constraint named <table>_<column>_key in Postgres
+ALTER TABLE "vendor_templates" DROP CONSTRAINT IF EXISTS "vendor_templates_vendor_key_unique";
+ALTER TABLE "vendor_templates" DROP CONSTRAINT IF EXISTS "vendor_templates_vendor_key_key";
 
 -- Step 2: Add new columns for versioning
 ALTER TABLE "vendor_templates"
