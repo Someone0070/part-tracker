@@ -1,19 +1,16 @@
 import { PDFParse } from "pdf-parse";
 import type { DocumentResult, ExtractedItem, StepCallback, ExtractionRules } from "./template-types.js";
+import type { VendorTemplate } from "./template-types.js";
+import { stripBoilerplate, stripForFillIn } from "./text-preprocessing.js";
+import { detectDocType, validateExtraction } from "./validation-stack.js";
+import { loadAllActiveTemplates, detectVendorVersions, hasUsableRules, isInCooldown } from "./vendor-detect.js";
+import { recordResult, needsSpotCheck, createTemplateVersion, type RecentResult } from "./template-lifecycle.js";
+import { determineConfidenceTier, validateTemplate } from "./template-validate.js";
+import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairField, isLlmConfigured, type LlmExtraction } from "./template-llm.js";
 import { applyTemplate, distributeAndNormalize } from "./template-apply.js";
-import { validateTemplate } from "./template-validate.js";
-import { llmExtract, llmFillIn, llmGenerateTemplate, llmRepairRowRegex, isLlmConfigured, isEscalationConfigured, ESCALATION_MODEL } from "./template-llm.js";
 import { checkExtraction } from "./extraction-sanity.js";
-import {
-  loadAllTemplates,
-  detectVendor,
-  incrementSuccess,
-  incrementFail,
-  upsertTemplate,
-  recordFailedAttempt,
-  isInCooldown,
-  hasUsableRules,
-} from "./vendor-detect.js";
+import { deriveVendorKey } from "./template-types.js";
+import RE2 from "re2";
 
 export type { DocumentResult, ExtractedItem };
 export { distributeAndNormalize } from "./template-apply.js";
@@ -169,7 +166,7 @@ async function ocrExtractText(pdfBase64: string, abortSignal?: AbortSignal): Pro
 
     // Strip HTML tags and markdown artifacts -- nano can't parse markup
     const cleaned = bestText
-      .replace(/<[^>]+>/g, " ")       // HTML tags → space
+      .replace(/<[^>]+>/g, " ")       // HTML tags -> space
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
@@ -417,253 +414,6 @@ function recoverTotals(
   return { tax, shipping };
 }
 
-/**
- * Fill in metadata + totals from nano, then distribute tax/shipping to items.
- */
-async function fillMetadata(
-  result: DocumentResult,
-  text: string,
-  onStep: StepCallback,
-  abortSignal?: AbortSignal
-): Promise<void> {
-  if (!isLlmConfigured()) return;
-
-  onStep("filling_metadata", "Filling metadata with gpt-5.4-nano...");
-  try {
-    const fill = await llmFillIn(text, abortSignal);
-
-    result.orderNumber = fill.orderNumber;
-    result.orderDate = fill.orderDate;
-    result.technicianName = fill.technicianName;
-    result.trackingNumber = fill.trackingNumber;
-    result.deliveryCourier = fill.deliveryCourier;
-
-    const recovered = recoverTotals(text, fill.totalTax ?? 0, fill.totalShipping ?? 0);
-    if ((recovered.tax > 0 || recovered.shipping > 0) && result.items.length > 0) {
-      distributeAndNormalize(result.items, recovered.shipping, recovered.tax);
-    }
-  } catch {
-    // Non-critical -- items still extracted
-  }
-}
-
-export async function parseDocument(
-  pdfBase64: string,
-  onStep: StepCallback = () => {},
-  abortSignal?: AbortSignal,
-  mode: string = "template",
-  extractionModel?: string
-): Promise<DocumentResult> {
-  // Step 1: Extract text
-  onStep("extracting_text", "Extracting text from PDF...");
-  const buffer = Buffer.from(pdfBase64, "base64");
-  const parser = new PDFParse({ data: new Uint8Array(buffer) });
-  const result = await parser.getText();
-  await parser.destroy();
-
-  let text = result.text.replace(/\f/g, "\n").trim();
-  if (text.length < 20) {
-    throw new Error("Document appears to be empty or image-only");
-  }
-
-  // Check if pdf-parse produced garbled text -- supplement with OCR if so
-  const qualityIssue = textQualityPoor(text);
-  if (qualityIssue) {
-    console.log(`[OCR] pdf-parse quality issue: ${qualityIssue}, trying GLM OCR fallback...`);
-    onStep("ocr_fallback", "Enhancing text with OCR...");
-    const ocrText = await ocrExtractText(pdfBase64, abortSignal);
-    if (ocrText) {
-      console.log(`[OCR] supplementing (pdf-parse=${text.length} chars, ocr=${ocrText.length} chars)`);
-      // Don't replace -- OCR may miss data (e.g. line items). Append so the LLM
-      // gets the original text (items) plus OCR text (clean metadata/totals).
-      text = text + "\n\n--- OCR-enhanced text ---\n" + ocrText;
-    }
-  }
-
-  // LLM-only mode: skip template matching entirely
-  if (mode === "llm") {
-    return llmExtractOnly(text, onStep, abortSignal, extractionModel);
-  }
-
-  // Step 2: Detect vendor
-  onStep("detecting_vendor", "Searching for vendor template...");
-  const templates = await loadAllTemplates();
-  const matched = detectVendor(text, templates);
-
-  if (matched) {
-    const tpl = matched.template;
-    const usable = hasUsableRules(tpl);
-    const isUnreliable = tpl.failCount > 3 && tpl.successCount < tpl.failCount;
-
-    if (usable && !isUnreliable) {
-      onStep("vendor_matched", `Vendor matched: ${tpl.vendorName}`);
-      onStep("applying_template", "Applying learned template...");
-
-      const extracted = applyTemplate(text, tpl.extractionRules);
-
-      if (extracted.items.length > 0) {
-        // Sanity check items
-        const sanity = checkExtraction(extracted);
-        if (!sanity.pass) {
-          console.warn(`Template sanity FAILED (score=${sanity.score}):`, sanity.failures);
-          onStep("sanity_failed", `Template data looks wrong. Falling back to LLM...`);
-          incrementFail(tpl.id).catch(() => {});
-          return llmExtractOnly(text, onStep, abortSignal, extractionModel);
-        }
-
-        // Items good -- fill metadata from nano
-        await fillMetadata(extracted, text, onStep, abortSignal);
-        fixSplitTracking(extracted);
-        sanitizeExtraction(extracted);
-
-        incrementSuccess(tpl.id).catch(() => {});
-
-        if (isLlmConfigured() && (tpl.successCount + 1) % 10 === 0) {
-          verifyTemplateInBackground(text, extracted, tpl.id);
-        }
-
-        onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
-        return extracted;
-      }
-
-      onStep("template_failed", "Template extraction failed. Falling back to LLM...");
-      if (matched.confidence === "domain") {
-        incrementFail(tpl.id).catch(() => {});
-      }
-
-      const canRegenerate =
-        matched.confidence === "domain" &&
-        tpl.failCount + 1 > 3 && tpl.successCount < tpl.failCount + 1;
-      return llmPath(text, onStep, abortSignal, canRegenerate ? tpl.id : undefined, extractionModel);
-    }
-
-    if (!usable) {
-      if (isInCooldown(tpl)) {
-        const daysLeft = Math.ceil(
-          (7 * 24 * 60 * 60 * 1000 - (Date.now() - tpl.lastGenerationAttempt!.getTime())) / (24 * 60 * 60 * 1000)
-        );
-        onStep("template_cooldown", `Template generation for ${tpl.vendorName} failed recently. Retrying in ${daysLeft}d.`);
-        return llmExtractOnly(text, onStep, abortSignal, extractionModel);
-      }
-      onStep("template_retry", `Retrying template generation for ${tpl.vendorName}...`);
-      return llmPath(text, onStep, abortSignal, tpl.id, extractionModel);
-    }
-
-    onStep("template_failed", `Template for ${tpl.vendorName} is unreliable. Using LLM...`);
-    return llmPath(text, onStep, abortSignal, tpl.id, extractionModel);
-  }
-
-  onStep("no_template", "New vendor detected. Learning template via LLM...");
-  return llmPath(text, onStep, abortSignal, undefined, extractionModel);
-}
-
-/**
- * LLM extraction only -- no template generation.
- */
-async function llmExtractOnly(
-  text: string,
-  onStep: StepCallback,
-  abortSignal?: AbortSignal,
-  modelOverride?: string
-): Promise<DocumentResult> {
-  if (!isLlmConfigured()) {
-    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
-  }
-  if (abortSignal?.aborted) throw new Error("Request cancelled");
-
-  const effectiveModel = modelOverride ?? "gpt-5.4-nano";
-  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
-  const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal, modelOverride);
-
-  const items: ExtractedItem[] = extraction.items.map((item) => ({
-    partNumber: item.partNumber,
-    partName: item.partName,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    shipCost: null,
-    taxPrice: null,
-    brand: item.brand,
-  }));
-
-  const recovered = recoverTotals(text, extraction.totalTax ?? 0, extraction.totalShipping ?? 0);
-  if ((recovered.tax > 0 || recovered.shipping > 0) && items.length > 0) {
-    distributeAndNormalize(items, recovered.shipping, recovered.tax);
-  }
-
-  const docResult: DocumentResult = {
-    vendor: extraction.vendor,
-    orderNumber: extraction.orderNumber,
-    orderDate: extraction.orderDate,
-    technicianName: extraction.technicianName,
-    trackingNumber: extraction.trackingNumber,
-    deliveryCourier: extraction.deliveryCourier,
-    items,
-    rawText: text,
-  };
-  fixSplitTracking(docResult);
-  sanitizeExtraction(docResult);
-
-  onStep("done", `${items.length} item${items.length !== 1 ? "s" : ""} extracted`);
-  return docResult;
-}
-
-async function llmPath(
-  text: string,
-  onStep: StepCallback,
-  abortSignal?: AbortSignal,
-  existingTemplateId?: number,
-  extractionModel?: string
-): Promise<DocumentResult> {
-  if (!isLlmConfigured()) {
-    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
-  }
-  if (abortSignal?.aborted) throw new Error("Request cancelled");
-
-  // Step 1: Extract everything with nano
-  const effectiveModel = extractionModel ?? "gpt-5.4-nano";
-  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
-  const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  const extraction = await llmExtract(llmText, abortSignal, extractionModel);
-
-  const items: ExtractedItem[] = extraction.items.map((item) => ({
-    partNumber: item.partNumber,
-    partName: item.partName,
-    quantity: item.quantity,
-    unitPrice: item.unitPrice,
-    shipCost: null,
-    taxPrice: null,
-    brand: item.brand,
-  }));
-
-  const recovered = recoverTotals(text, extraction.totalTax ?? 0, extraction.totalShipping ?? 0);
-  if ((recovered.tax > 0 || recovered.shipping > 0) && items.length > 0) {
-    distributeAndNormalize(items, recovered.shipping, recovered.tax);
-  }
-
-  const docResult: DocumentResult = {
-    vendor: extraction.vendor,
-    orderNumber: extraction.orderNumber,
-    orderDate: extraction.orderDate,
-    technicianName: extraction.technicianName,
-    trackingNumber: extraction.trackingNumber,
-    deliveryCourier: extraction.deliveryCourier,
-    items,
-    rawText: text,
-  };
-  fixSplitTracking(docResult);
-  sanitizeExtraction(docResult);
-
-  onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
-
-  // Template generation runs in background -- don't block the response
-  const layout = detectLayoutType(text);
-  console.log(`[Layout] detected: ${layout}`);
-  learnTemplateInBackground(text, llmText, extraction, existingTemplateId, columnHintFor(text, extraction), layout);
-
-  return docResult;
-}
-
 function columnHintFor(text: string, extraction: { items: Array<{ partNumber: string }> }): string {
   if (extraction.items.length === 0) return "";
   const firstItem = extraction.items[0];
@@ -693,17 +443,329 @@ function withTimeout<T>(
   ]);
 }
 
-const TEMPLATE_GEN_TIMEOUT = 15_000;  // 15s per LLM call
-const TOTAL_BACKGROUND_TIMEOUT = 45_000;  // 45s total for entire background process
+const TEMPLATE_GEN_TIMEOUT = 30_000;  // 30s for GPT 5.4 (slower than mini)
+const TOTAL_BACKGROUND_TIMEOUT = 60_000;  // 60s total for entire background process
+
+// --- Helper: build DocumentResult from LlmExtraction ---
+
+function buildDocResult(
+  extraction: LlmExtraction,
+  cleanText: string,
+  rawText: string
+): DocumentResult {
+  const items: ExtractedItem[] = extraction.items.map((item) => ({
+    partNumber: item.partNumber,
+    partName: item.partName,
+    quantity: item.quantity,
+    unitPrice: item.unitPrice,
+    shipCost: null,
+    taxPrice: null,
+    brand: item.brand,
+  }));
+
+  // Use rawText for total recovery (subtotal/total lines may be in boilerplate)
+  const recovered = recoverTotals(rawText, extraction.totalTax ?? 0, extraction.totalShipping ?? 0);
+  if ((recovered.tax > 0 || recovered.shipping > 0) && items.length > 0) {
+    distributeAndNormalize(items, recovered.shipping, recovered.tax);
+  }
+
+  const docResult: DocumentResult = {
+    vendor: extraction.vendor,
+    orderNumber: extraction.orderNumber,
+    orderDate: extraction.orderDate,
+    technicianName: extraction.technicianName,
+    trackingNumber: extraction.trackingNumber,
+    deliveryCourier: extraction.deliveryCourier,
+    items,
+    rawText,
+  };
+  fixSplitTracking(docResult);
+  sanitizeExtraction(docResult);
+
+  return docResult;
+}
+
+// --- Fill metadata using nano (for template-extracted results) ---
+
+/**
+ * Fill in metadata + totals from nano, then distribute tax/shipping to items.
+ * Uses cleanText with item rows stripped for a smaller, cheaper nano call.
+ * Uses rawText for total recovery (math-based).
+ */
+async function fillMetadata(
+  result: DocumentResult,
+  cleanText: string,
+  rawText: string,
+  matchedRowLines: string[],
+  onStep: StepCallback,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  if (!isLlmConfigured()) return;
+
+  onStep("filling_metadata", "Filling metadata with gpt-5.4-nano...");
+  try {
+    // Strip matched item rows + addresses from cleanText for smaller nano input
+    const fillText = stripForFillIn(cleanText, matchedRowLines);
+    const fill = await llmFillIn(fillText, abortSignal);
+
+    result.orderNumber = fill.orderNumber;
+    result.orderDate = fill.orderDate;
+    result.technicianName = fill.technicianName;
+    result.trackingNumber = fill.trackingNumber;
+    result.deliveryCourier = fill.deliveryCourier;
+
+    // Use rawText for recovery -- subtotal/total may be in boilerplate
+    const recovered = recoverTotals(rawText, fill.totalTax ?? 0, fill.totalShipping ?? 0);
+    if ((recovered.tax > 0 || recovered.shipping > 0) && result.items.length > 0) {
+      distributeAndNormalize(result.items, recovered.shipping, recovered.tax);
+    }
+  } catch {
+    // Non-critical -- items still extracted
+  }
+}
+
+/**
+ * Get the raw matched row lines from template application (for stripForFillIn).
+ * We re-run the row regex to capture the actual matched text lines.
+ */
+function getMatchedRowLines(rawText: string, rules: ExtractionRules): string[] {
+  try {
+    const rowRe = new RE2(rules.lineItems.row, "g");
+    const lines: string[] = [];
+    let match;
+    while ((match = rowRe.exec(rawText)) !== null) {
+      lines.push(match[0]);
+    }
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+// --- Main extraction flow ---
+
+export async function parseDocument(
+  pdfBase64: string,
+  onStep: StepCallback = () => {},
+  abortSignal?: AbortSignal,
+  mode: string = "template",
+  extractionModel?: string
+): Promise<DocumentResult> {
+  // Step 1: Extract text
+  onStep("extracting_text", "Extracting text from PDF...");
+  const buffer = Buffer.from(pdfBase64, "base64");
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  const result = await parser.getText();
+  await parser.destroy();
+
+  let rawText = result.text.replace(/\f/g, "\n").trim();
+  if (rawText.length < 20) {
+    throw new Error("Document appears to be empty or image-only");
+  }
+
+  // Check if pdf-parse produced garbled text -- supplement with OCR if so
+  const qualityIssue = textQualityPoor(rawText);
+  if (qualityIssue) {
+    console.log(`[OCR] pdf-parse quality issue: ${qualityIssue}, trying GLM OCR fallback...`);
+    onStep("ocr_fallback", "Enhancing text with OCR...");
+    const ocrText = await ocrExtractText(pdfBase64, abortSignal);
+    if (ocrText) {
+      console.log(`[OCR] supplementing (pdf-parse=${rawText.length} chars, ocr=${ocrText.length} chars)`);
+      // Don't replace -- OCR may miss data (e.g. line items). Append so the LLM
+      // gets the original text (items) plus OCR text (clean metadata/totals).
+      rawText = rawText + "\n\n--- OCR-enhanced text ---\n" + ocrText;
+    }
+  }
+
+  // Strip boilerplate for LLM calls (template regex still uses rawText)
+  const cleanText = stripBoilerplate(rawText);
+
+  // LLM-only mode: skip template matching entirely
+  if (mode === "llm") {
+    return llmExtractOnly(cleanText, rawText, onStep, abortSignal, extractionModel);
+  }
+
+  // Step 2: Detect vendor + doc type
+  onStep("detecting_vendor", "Searching for vendor template...");
+  const docType = detectDocType(rawText);
+  const templates = await loadAllActiveTemplates();
+  const matched = detectVendorVersions(rawText, templates);
+
+  if (matched) {
+    // Try each template version (newest first -- already sorted by loadAllActiveTemplates)
+    const versions = matched.templates.filter((t) => hasUsableRules(t));
+
+    for (const tpl of versions) {
+      onStep("vendor_matched", `Vendor matched: ${tpl.vendorName} (v${tpl.version})`);
+      onStep("applying_template", "Applying learned template...");
+
+      // Apply template regex to rawText (templates are built against raw text)
+      const extracted = applyTemplate(rawText, tpl.extractionRules);
+
+      if (extracted.items.length === 0) {
+        console.log(`[Template] v${tpl.version} extracted 0 items, trying next version`);
+        recordResult(tpl.id, false).catch(() => {});
+        continue;
+      }
+
+      // Sanity pre-check (not scored -- basic structural checks)
+      const sanity = checkExtraction(extracted);
+      if (!sanity.pass) {
+        console.warn(`[Template] v${tpl.version} sanity FAILED (score=${sanity.score}):`, sanity.failures);
+        recordResult(tpl.id, false).catch(() => {});
+        continue;
+      }
+
+      // Scored validation via validation stack
+      const validation = validateExtraction(extracted.items, rawText, docType);
+
+      if (validation.pass === true) {
+        // Definitive pass -- serve result
+        recordResult(tpl.id, true).catch(() => {});
+
+        const matchedRows = getMatchedRowLines(rawText, tpl.extractionRules);
+        await fillMetadata(extracted, cleanText, rawText, matchedRows, onStep, abortSignal);
+        fixSplitTracking(extracted);
+        sanitizeExtraction(extracted);
+
+        onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
+        return extracted;
+      }
+
+      if (validation.pass === null) {
+        // Unverified -- check if spot check is needed
+        const recentResults = JSON.parse(tpl.recentResults) as RecentResult[];
+        const spotCheckNeeded = needsSpotCheck(recentResults);
+
+        if (spotCheckNeeded && isLlmConfigured()) {
+          // Run nano in parallel with fill-in to verify
+          onStep("spot_check", "Running spot check...");
+          const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
+
+          try {
+            const nanoExtraction = await llmExtract(llmText, abortSignal);
+            const tplPNs = new Set(extracted.items.map((i) => i.partNumber));
+            const nanoPNs = nanoExtraction.items.map((i) => i.partNumber).filter(Boolean);
+
+            let agrees = true;
+            if (nanoExtraction.items.length > extracted.items.length) agrees = false;
+            for (const pn of nanoPNs) {
+              if (!tplPNs.has(pn)) { agrees = false; break; }
+            }
+
+            if (agrees) {
+              recordResult(tpl.id, true).catch(() => {});
+            } else {
+              console.warn(`[SpotCheck] v${tpl.version} FAILED: template=${extracted.items.length} items, nano=${nanoExtraction.items.length} items`);
+              recordResult(tpl.id, false).catch(() => {});
+
+              // Serve nano result instead
+              const nanoResult = buildDocResult(nanoExtraction, cleanText, rawText);
+              onStep("done", `${nanoResult.items.length} item${nanoResult.items.length !== 1 ? "s" : ""} extracted`);
+
+              // Trigger background repair/regen against the failed template
+              const layout = detectLayoutType(rawText);
+              triggerBackgroundRepairOrRegen(rawText, cleanText, extracted, nanoExtraction, tpl, layout);
+
+              return nanoResult;
+            }
+          } catch {
+            // Spot check failed (LLM error) -- record null, serve template result
+            recordResult(tpl.id, null).catch(() => {});
+          }
+        } else {
+          // No spot check needed -- record null (unverified)
+          recordResult(tpl.id, null).catch(() => {});
+        }
+
+        // Serve template result (either spot check passed or not needed)
+        const matchedRows = getMatchedRowLines(rawText, tpl.extractionRules);
+        await fillMetadata(extracted, cleanText, rawText, matchedRows, onStep, abortSignal);
+        fixSplitTracking(extracted);
+        sanitizeExtraction(extracted);
+
+        onStep("done", `${extracted.items.length} item${extracted.items.length !== 1 ? "s" : ""} extracted`);
+        return extracted;
+      }
+
+      // validation.pass === false -- try next version
+      console.warn(`[Template] v${tpl.version} validation FAILED:`, validation.reason);
+      recordResult(tpl.id, false).catch(() => {});
+    }
+
+    // All versions failed -- fall through to nano extraction
+    onStep("template_failed", "All template versions failed. Falling back to LLM...");
+  } else {
+    onStep("no_template", "New vendor detected. Extracting with LLM...");
+  }
+
+  // LLM fallback -- extract with nano, trigger background template learning
+  return llmFallback(cleanText, rawText, onStep, abortSignal, extractionModel);
+}
+
+// --- LLM extraction only (no template generation) ---
+
+async function llmExtractOnly(
+  cleanText: string,
+  rawText: string,
+  onStep: StepCallback,
+  abortSignal?: AbortSignal,
+  modelOverride?: string
+): Promise<DocumentResult> {
+  if (!isLlmConfigured()) {
+    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
+  }
+  if (abortSignal?.aborted) throw new Error("Request cancelled");
+
+  const effectiveModel = modelOverride ?? "gpt-5.4-nano";
+  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
+  const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
+  const extraction = await llmExtract(llmText, abortSignal, modelOverride);
+
+  const docResult = buildDocResult(extraction, cleanText, rawText);
+  onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
+  return docResult;
+}
+
+// --- LLM fallback with background template learning ---
+
+async function llmFallback(
+  cleanText: string,
+  rawText: string,
+  onStep: StepCallback,
+  abortSignal?: AbortSignal,
+  extractionModel?: string
+): Promise<DocumentResult> {
+  if (!isLlmConfigured()) {
+    throw new Error("No extraction template for this vendor. Set OPENAI_API_KEY to enable automatic template learning.");
+  }
+  if (abortSignal?.aborted) throw new Error("Request cancelled");
+
+  const effectiveModel = extractionModel ?? "gpt-5.4-nano";
+  onStep("llm_extracting", `Extracting data with ${effectiveModel}...`);
+  const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
+  const extraction = await llmExtract(llmText, abortSignal, extractionModel);
+
+  const docResult = buildDocResult(extraction, cleanText, rawText);
+  onStep("done", `${docResult.items.length} item${docResult.items.length !== 1 ? "s" : ""} extracted`);
+
+  // Template generation runs in background -- don't block the response
+  const layout = detectLayoutType(rawText);
+  console.log(`[Layout] detected: ${layout}`);
+  learnTemplateInBackground(rawText, cleanText, extraction, layout);
+
+  return docResult;
+}
+
+// --- Background template learning (single-shot GPT 5.4) ---
 
 function learnTemplateInBackground(
-  text: string,
-  llmText: string,
-  extraction: import("./template-llm.js").LlmExtraction,
-  existingTemplateId: number | undefined,
-  columnHint: string,
+  rawText: string,
+  cleanText: string,
+  extraction: LlmExtraction,
   layout: LayoutType
 ): void {
+  const columnHint = columnHintFor(rawText, extraction);
   if (columnHint) {
     console.log(`[Template] column hint:\n${columnHint}`);
   } else {
@@ -712,78 +774,33 @@ function learnTemplateInBackground(
 
   const bgTask = async () => {
     try {
+      const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
       const templateRules = await withTimeout(
-        (sig) => llmGenerateTemplate(llmText, extraction, sig, undefined, columnHint, layout),
-        TEMPLATE_GEN_TIMEOUT, "mini template gen"
+        (sig) => llmGenerateTemplate(llmText, extraction, sig, columnHint, layout),
+        TEMPLATE_GEN_TIMEOUT, "template gen"
       );
 
-      let saved = false;
-      for (let attempt = 0; attempt < 2 && !saved; attempt++) {
-        const validation = validateTemplate(text, templateRules, extraction);
+      // Determine confidence tier
+      const textPartNumbers = findPartNumbers(rawText);
+      const tier = determineConfidenceTier(extraction, rawText, textPartNumbers);
+      console.log(`[Template] confidence tier: ${tier}`);
 
-        if (validation.valid) {
-          await upsertTemplate(templateRules, existingTemplateId);
-          console.log(`[Template] learned for ${templateRules.vendorName}`);
-          saved = true;
-        } else if (attempt === 0) {
-          console.warn("[Template] validation failed:", validation.reason);
-
-          if (extraction.items.length > 0) {
-            const firstItem = extraction.items[0];
-            const itemContext = text.split("\n").find((line) => line.includes(firstItem.partNumber)) ?? "";
-
-            let annotation = "";
-            if (itemContext.includes("\t")) {
-              const cols = itemContext.split("\t");
-              const pnIdx = cols.findIndex((c) => c.trim() === firstItem.partNumber);
-              if (pnIdx >= 0) {
-                annotation = `\nColumn layout: ${cols.map((c, i) => `[${i + 1}]="${c.trim()}"`).join("  ")}`;
-              }
-            }
-
-            const fixedRow = await withTimeout(
-              (sig) => llmRepairRowRegex({
-                expected: `partNumber=${firstItem.partNumber}, description=${firstItem.partName}, quantity=${firstItem.quantity}, unitPrice=${firstItem.unitPrice}`,
-                got: validation.reason ?? "0 items matched",
-                context: `Start: ${templateRules.lineItems.start}\nEnd: ${templateRules.lineItems.end}\nRow: ${templateRules.lineItems.row}\n\nExample line: ${itemContext}${annotation}`,
-              }, sig),
-              TEMPLATE_GEN_TIMEOUT, "row repair"
-            );
-
-            if (fixedRow) templateRules.lineItems.row = fixedRow;
-          }
-        } else {
-          console.warn("[Template] repair failed:", validation.reason);
-        }
+      if (tier === 3) {
+        console.warn("[Template] tier 3 (no confidence) -- skipping save");
+        return;
       }
 
-      // Escalation: if mini failed, try Gemini
-      if (!saved && isEscalationConfigured()) {
-        console.log("[Template] escalating to Gemini 2.5 Flash...");
-        try {
-          const escalatedRules = await withTimeout(
-            (sig) => llmGenerateTemplate(llmText, extraction, sig, ESCALATION_MODEL, columnHint, layout),
-            30_000, "Gemini escalation"
-          );
-          const escalatedValidation = validateTemplate(text, escalatedRules, extraction);
-          if (escalatedValidation.valid) {
-            await upsertTemplate(escalatedRules, existingTemplateId);
-            console.log(`[Template] learned via Gemini for ${escalatedRules.vendorName}`);
-            saved = true;
-          } else {
-            console.warn("[Template] Gemini also failed:", escalatedValidation.reason);
-          }
-        } catch (err) {
-          console.warn("[Template] Gemini escalation error:", err);
-        }
-      }
-
-      if (!saved) {
-        recordFailedAttempt(extraction.vendor, templateRules.vendorSignals).catch(() => {});
+      // Validate against nano extraction
+      const validation = validateTemplate(rawText, templateRules, extraction, tier);
+      if (validation.valid) {
+        const vendorKey = deriveVendorKey(templateRules.vendorSignals);
+        const newId = await createTemplateVersion(vendorKey, templateRules);
+        console.log(`[Template] learned for ${templateRules.vendorName} (id=${newId}, tier=${tier})`);
+      } else {
+        console.warn("[Template] validation failed:", validation.reason);
       }
     } catch (err) {
       console.warn("[Template] background generation failed:", err);
-      recordFailedAttempt(extraction.vendor, { domains: [], keywords: [extraction.vendor.toLowerCase()] }).catch(() => {});
     }
   };
 
@@ -793,25 +810,118 @@ function learnTemplateInBackground(
   });
 }
 
-function verifyTemplateInBackground(
-  text: string,
+// --- Background repair/regeneration ---
+
+function triggerBackgroundRepairOrRegen(
+  rawText: string,
+  cleanText: string,
   templateResult: DocumentResult,
-  templateId: number
+  nanoExtraction: LlmExtraction,
+  template: VendorTemplate,
+  layout: LayoutType
 ): void {
-  const llmText = text.length > MAX_LLM_TEXT ? text.slice(0, MAX_LLM_TEXT) : text;
-  llmExtract(llmText).then((llm) => {
-    const tplPNs = new Set(templateResult.items.map((i) => i.partNumber));
-    const llmPNs = new Set(llm.items.map((i) => i.partNumber).filter(Boolean));
+  const bgTask = async () => {
+    try {
+      // Skip if template is in cooldown
+      if (isInCooldown(template)) {
+        console.log(`[Repair] ${template.vendorName} in cooldown, skipping`);
+        return;
+      }
 
-    let mismatched = false;
-    if (llm.items.length > templateResult.items.length) mismatched = true;
-    for (const pn of llmPNs) {
-      if (!tplPNs.has(pn)) { mismatched = true; break; }
-    }
+      // Determine confidence tier
+      const textPartNumbers = findPartNumbers(rawText);
+      const tier = determineConfidenceTier(nanoExtraction, rawText, textPartNumbers);
+      console.log(`[Repair] confidence tier: ${tier}`);
 
-    if (mismatched) {
-      console.warn(`Template ${templateId} spot-check FAILED: template=${templateResult.items.length} items, llm=${llm.items.length} items`);
-      incrementFail(templateId).catch(() => {});
+      if (tier === 3) {
+        console.warn("[Repair] tier 3 (no confidence) -- skipping");
+        return;
+      }
+
+      // Diff template vs nano: same part numbers = field repair, different = regenerate
+      const tplPNs = new Set(templateResult.items.map((i) => i.partNumber));
+      const nanoPNs = new Set(nanoExtraction.items.map((i) => i.partNumber).filter(Boolean));
+
+      const samePartNumbers =
+        tplPNs.size === nanoPNs.size &&
+        [...nanoPNs].every((pn) => tplPNs.has(pn));
+
+      if (samePartNumbers && tier === 1) {
+        // Field repair (tier 1 only for prices) -- part numbers match but prices differ
+        console.log("[Repair] same part numbers, attempting field repair...");
+
+        // Find mismatched price fields
+        const priceIssues: Array<{ partNumber: string; expected: string; got: string }> = [];
+        for (const nanoItem of nanoExtraction.items) {
+          if (nanoItem.unitPrice == null) continue;
+          const tplItem = templateResult.items.find((i) => i.partNumber === nanoItem.partNumber);
+          if (!tplItem || tplItem.unitPrice == null) continue;
+          if (Math.abs(tplItem.unitPrice - nanoItem.unitPrice) > 0.01) {
+            priceIssues.push({
+              partNumber: nanoItem.partNumber,
+              expected: String(nanoItem.unitPrice),
+              got: String(tplItem.unitPrice),
+            });
+          }
+        }
+
+        if (priceIssues.length > 0) {
+          // Get context around the first mismatched item
+          const firstIssue = priceIssues[0];
+          const contextLine = rawText.split("\n").find((l) => l.includes(firstIssue.partNumber)) ?? "";
+
+          const fixedRegex = await withTimeout(
+            (sig) => llmRepairField(
+              "unitPrice",
+              template.extractionRules.lineItems.row,
+              priceIssues,
+              contextLine,
+              sig
+            ),
+            TEMPLATE_GEN_TIMEOUT, "field repair"
+          );
+
+          if (fixedRegex) {
+            const repairedRules = {
+              ...template.extractionRules,
+              lineItems: { ...template.extractionRules.lineItems, row: fixedRegex },
+            };
+
+            const revalidation = validateTemplate(rawText, repairedRules, nanoExtraction, tier);
+            if (revalidation.valid) {
+              const newId = await createTemplateVersion(template.vendorKey, repairedRules);
+              console.log(`[Repair] field repair saved as new version (id=${newId})`);
+              return;
+            } else {
+              console.warn("[Repair] repaired template failed validation:", revalidation.reason);
+            }
+          }
+        }
+      }
+
+      // Regeneration: generate entirely new template
+      console.log("[Repair] regenerating template...");
+      const llmText = cleanText.length > MAX_LLM_TEXT ? cleanText.slice(0, MAX_LLM_TEXT) : cleanText;
+      const columnHint = columnHintFor(rawText, nanoExtraction);
+
+      const newRules = await withTimeout(
+        (sig) => llmGenerateTemplate(llmText, nanoExtraction, sig, columnHint, layout),
+        TEMPLATE_GEN_TIMEOUT, "template regen"
+      );
+
+      const regenValidation = validateTemplate(rawText, newRules, nanoExtraction, tier);
+      if (regenValidation.valid) {
+        const newId = await createTemplateVersion(template.vendorKey, newRules);
+        console.log(`[Repair] regenerated template saved as new version (id=${newId})`);
+      } else {
+        console.warn("[Repair] regenerated template failed validation:", regenValidation.reason);
+      }
+    } catch (err) {
+      console.warn("[Repair] background repair/regen failed:", err);
     }
-  }).catch(() => {});
+  };
+
+  withTimeout(() => bgTask(), TOTAL_BACKGROUND_TIMEOUT, "background repair/regen").catch((err) => {
+    console.warn("[Repair] background timed out:", err.message);
+  });
 }
