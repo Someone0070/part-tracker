@@ -102,6 +102,18 @@ export function validateTemplate(
     }
   }
 
+  // Description quality check (warning only -- sanitizer handles cleanup)
+  for (const nanoItem of nanoExtraction.items) {
+    if (!nanoItem.partName) continue;
+    const tplItem = result.items.find((i) => i.partNumber === nanoItem.partNumber);
+    if (!tplItem || !tplItem.partName) continue;
+    const nanoName = nanoItem.partName.trim();
+    const tplName = tplItem.partName.trim();
+    if (nanoName.length > 0 && tplName.length > nanoName.length * 1.3) {
+      console.warn(`[Template] description bloat for ${nanoItem.partNumber}: template="${tplName}" (${tplName.length} chars), nano="${nanoName}" (${nanoName.length} chars)`);
+    }
+  }
+
   if (tier === 1) {
     // Price gate (tier 1 only)
     for (const nanoItem of nanoExtraction.items) {

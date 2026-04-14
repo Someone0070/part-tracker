@@ -270,6 +270,18 @@ function sanitizeExtraction(result: DocumentResult): void {
     }
   }
 
+  // Part name: strip shipment status prefixes that get captured by sloppy regexes
+  const STATUS_PREFIXES = /^(SHIPPED|B\/O|BACKORDERED|BACK\s*ORDER(?:ED)?|IN\s*STOCK|OUT\s*OF\s*STOCK|PENDING|ON\s*ORDER)\s+/i;
+  for (const item of result.items) {
+    if (item.partName && STATUS_PREFIXES.test(item.partName)) {
+      const cleaned = item.partName.replace(STATUS_PREFIXES, "").trim();
+      if (cleaned.length > 0) {
+        console.log(`[Sanitize] stripped status prefix from partName "${item.partName}" -> "${cleaned}"`);
+        item.partName = cleaned;
+      }
+    }
+  }
+
   // Brand validation: reject if it's clearly part of a description suffix
   for (const item of result.items) {
     if (item.brand) {
