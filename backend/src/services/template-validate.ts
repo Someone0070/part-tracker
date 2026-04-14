@@ -4,6 +4,15 @@ import { applyTemplate } from "./template-apply.js";
 import type { LlmExtraction } from "./template-llm.js";
 import { parseSubtotal } from "./validation-stack.js";
 
+/** Tokenize a description for overlap comparison: lowercase, strip punctuation, split on whitespace */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+}
+
 export interface ValidationResult {
   valid: boolean;
   reason?: string;
@@ -107,20 +116,25 @@ export function validateTemplate(
     if (!nanoItem.partName || nanoItem.partName.trim().length === 0) continue;
     const tplItem = result.items.find((i) => i.partNumber === nanoItem.partNumber);
     if (!tplItem || !tplItem.partName) continue;
-    const nanoName = nanoItem.partName.trim().toLowerCase();
-    const tplName = tplItem.partName.trim().toLowerCase();
-    // Nano's description should appear in template's description
-    if (nanoName.length > 3 && !tplName.includes(nanoName)) {
+    const nanoTokens = tokenize(nanoItem.partName);
+    const tplTokens = tokenize(tplItem.partName);
+    if (nanoTokens.length === 0) continue;
+    // Token overlap: at least 80% of nano's tokens must appear in template's tokens
+    const tplTokenSet = new Set(tplTokens);
+    const overlap = nanoTokens.filter((t) => tplTokenSet.has(t)).length;
+    if (overlap / nanoTokens.length < 0.8) {
       return {
         valid: false,
-        reason: `Description mismatch for ${nanoItem.partNumber}: template="${tplItem.partName}", nano="${nanoItem.partName}"`,
+        reason: `Description mismatch for ${nanoItem.partNumber}: template="${tplItem.partName}", nano="${nanoItem.partName}" (${overlap}/${nanoTokens.length} token overlap)`,
       };
     }
     // Template shouldn't capture significantly more than nano (status columns, etc.)
-    if (nanoName.length > 3 && tplName.length > nanoName.length * 1.3) {
+    const nanoLen = nanoItem.partName.trim().length;
+    const tplLen = tplItem.partName.trim().length;
+    if (nanoLen > 3 && tplLen > nanoLen * 1.3) {
       return {
         valid: false,
-        reason: `Description overcapture for ${nanoItem.partNumber}: template="${tplItem.partName}" (${tplItem.partName.trim().length} chars), nano="${nanoItem.partName}" (${nanoItem.partName.trim().length} chars)`,
+        reason: `Description overcapture for ${nanoItem.partNumber}: template="${tplItem.partName}" (${tplLen} chars), nano="${nanoItem.partName}" (${nanoLen} chars)`,
       };
     }
   }
