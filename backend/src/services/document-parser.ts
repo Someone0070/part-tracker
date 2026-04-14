@@ -272,6 +272,11 @@ function fixSplitTracking(result: DocumentResult): void {
  * Uses learned prefixes (cached, activated at hit_count >= 3) combined with hardcoded list.
  */
 async function sanitizeExtraction(result: DocumentResult): Promise<void> {
+  // Tracking number recovery: if LLM returned nothing, try raw text
+  if (!result.trackingNumber && result.rawText) {
+    result.trackingNumber = recoverTracking(result.rawText, null);
+  }
+
   // Tracking number validation: must be 10+ chars and look like a real tracking number
   if (result.trackingNumber) {
     const t = result.trackingNumber.trim();
@@ -283,6 +288,10 @@ async function sanitizeExtraction(result: DocumentResult): Promise<void> {
     if (!looksLikeTracking) {
       console.log(`[Sanitize] rejected tracking "${t}" -- doesn't match known formats`);
       result.trackingNumber = null;
+      // Try to recover from raw text after rejecting bad LLM output
+      if (result.rawText) {
+        result.trackingNumber = recoverTracking(result.rawText, null);
+      }
     }
   }
 
@@ -533,7 +542,7 @@ async function buildDocResult(
     orderNumber: extraction.orderNumber,
     orderDate: extraction.orderDate,
     technicianName: extraction.technicianName,
-    trackingNumber: recoverTracking(rawText, extraction.trackingNumber),
+    trackingNumber: extraction.trackingNumber,
     deliveryCourier: extraction.deliveryCourier,
     items,
     rawText,
@@ -570,7 +579,7 @@ async function fillMetadata(
     result.orderNumber = fill.orderNumber;
     result.orderDate = fill.orderDate;
     result.technicianName = fill.technicianName;
-    result.trackingNumber = recoverTracking(rawText, fill.trackingNumber);
+    result.trackingNumber = fill.trackingNumber;
     result.deliveryCourier = fill.deliveryCourier;
 
     // Use rawText for recovery -- subtotal/total may be in boilerplate
