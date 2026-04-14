@@ -24,11 +24,9 @@ export interface LlmExtraction {
 // --- Models ---
 
 export const EXTRACTION_MODEL = "gpt-5.4-nano";
-export const TEMPLATE_MODEL = "gpt-5.4-mini";
-export const ESCALATION_MODEL = "gemini-2.5-flash";
+export const TEMPLATE_MODEL = "gpt-5.4";
 
 let _openaiClient: OpenAI | null = null;
-let _geminiClient: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
   if (!_openaiClient) {
@@ -39,29 +37,8 @@ function getOpenAIClient(): OpenAI {
   return _openaiClient;
 }
 
-function getGeminiClient(): OpenAI {
-  if (!_geminiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-    _geminiClient = new OpenAI({
-      apiKey,
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-    });
-  }
-  return _geminiClient;
-}
-
-function getClientForModel(model: string): OpenAI {
-  if (model.startsWith("gemini")) return getGeminiClient();
-  return getOpenAIClient();
-}
-
 export function isLlmConfigured(): boolean {
   return !!process.env.OPENAI_API_KEY;
-}
-
-export function isEscalationConfigured(): boolean {
-  return !!process.env.GEMINI_API_KEY;
 }
 
 // --- Schemas ---
@@ -291,12 +268,11 @@ export async function llmGenerateTemplate(
   text: string,
   extraction: LlmExtraction,
   abortSignal?: AbortSignal,
-  modelOverride?: string,
   columnHint?: string,
   layoutType?: string
 ): Promise<ExtractionRules> {
-  const model = modelOverride ?? TEMPLATE_MODEL;
-  const client = getClientForModel(model);
+  const model = TEMPLATE_MODEL;
+  const client = getOpenAIClient();
   const start = Date.now();
   console.log(`[LLM] template generation starting (${model}, layout=${layoutType ?? "unknown"})`);
 
@@ -350,21 +326,30 @@ export async function llmGenerateTemplate(
   return rules;
 }
 
-export async function llmRepairRowRegex(
-  failure: { expected: string; got: string; context: string },
+export async function llmRepairField(
+  fieldName: string,
+  currentRegex: string,
+  expectedValues: Array<{ partNumber: string; expected: string; got: string }>,
+  rawTextContext: string,
   abortSignal?: AbortSignal
 ): Promise<string | null> {
   const client = getOpenAIClient();
   const start = Date.now();
-  console.log(`[LLM] row regex repair starting (${TEMPLATE_MODEL})`);
+  console.log(`[LLM] field repair starting (${TEMPLATE_MODEL}, field=${fieldName})`);
 
   const response = await client.chat.completions.create(
     {
       model: TEMPLATE_MODEL,
       temperature: 0,
       messages: [
-        { role: "system", content: `You fix a regex pattern that failed to extract line items from an invoice. Write an RE2-compatible regex (no lookaheads/lookbehinds). The regex MUST use named capture groups: (?<partNumber>...), (?<description>...), (?<quantity>...), (?<unitPrice>...). Study the exact text carefully -- pay attention to tabs and column structure.` },
-        { role: "user", content: `The row regex failed.\n\nExpected: ${failure.expected}\nGot: ${failure.got}\n\nContext:\n${failure.context}\n\nReturn the fixed row regex.` },
+        {
+          role: "system",
+          content: `You fix a specific capture group in a regex pattern that extracts line items from invoices. The regex uses RE2 syntax (no lookaheads/lookbehinds). Only fix the named group (?<${fieldName}>...) -- keep everything else the same. Study the raw text carefully.`,
+        },
+        {
+          role: "user",
+          content: `The capture group (?<${fieldName}>) is extracting wrong values.\n\nCurrent regex: ${currentRegex}\n\nExpected vs Got:\n${expectedValues.map((v) => `  Part ${v.partNumber}: expected "${v.expected}", got "${v.got}"`).join("\n")}\n\nRaw text around items:\n${rawTextContext}\n\nReturn the fixed complete row regex.`,
+        },
       ],
       response_format: {
         type: "json_schema",
@@ -377,14 +362,14 @@ export async function llmRepairRowRegex(
   const content = response.choices[0]?.message?.content;
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (!content) {
-    console.log(`[LLM] row regex repair EMPTY response (${elapsed}s)`);
+    console.log(`[LLM] field repair EMPTY response (${elapsed}s)`);
     return null;
   }
 
   const parsed = JSON.parse(content) as { repairs: Array<{ name: string; regex: string }> };
-  const rowRepair = parsed.repairs.find((r) => r.name === "row");
-  console.log(`[LLM] row regex repair done (${elapsed}s) -- ${rowRepair ? "got fix" : "no fix"}`);
-  return rowRepair?.regex ?? null;
+  const fix = parsed.repairs.find((r) => r.name === "row");
+  console.log(`[LLM] field repair done (${elapsed}s) -- ${fix ? "got fix" : "no fix"}`);
+  return fix?.regex ?? null;
 }
 
 export interface TemplateFillIn {
