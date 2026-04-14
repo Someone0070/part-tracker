@@ -102,15 +102,26 @@ export function validateTemplate(
     }
   }
 
-  // Description quality check (warning only -- sanitizer handles cleanup)
+  // Description gate (both tiers) -- reject templates that overcapture into partName
   for (const nanoItem of nanoExtraction.items) {
-    if (!nanoItem.partName) continue;
+    if (!nanoItem.partName || nanoItem.partName.trim().length === 0) continue;
     const tplItem = result.items.find((i) => i.partNumber === nanoItem.partNumber);
     if (!tplItem || !tplItem.partName) continue;
-    const nanoName = nanoItem.partName.trim();
-    const tplName = tplItem.partName.trim();
-    if (nanoName.length > 0 && tplName.length > nanoName.length * 1.3) {
-      console.warn(`[Template] description bloat for ${nanoItem.partNumber}: template="${tplName}" (${tplName.length} chars), nano="${nanoName}" (${nanoName.length} chars)`);
+    const nanoName = nanoItem.partName.trim().toLowerCase();
+    const tplName = tplItem.partName.trim().toLowerCase();
+    // Nano's description should appear in template's description
+    if (nanoName.length > 3 && !tplName.includes(nanoName)) {
+      return {
+        valid: false,
+        reason: `Description mismatch for ${nanoItem.partNumber}: template="${tplItem.partName}", nano="${nanoItem.partName}"`,
+      };
+    }
+    // Template shouldn't capture significantly more than nano (status columns, etc.)
+    if (nanoName.length > 3 && tplName.length > nanoName.length * 1.3) {
+      return {
+        valid: false,
+        reason: `Description overcapture for ${nanoItem.partNumber}: template="${tplItem.partName}" (${tplItem.partName.trim().length} chars), nano="${nanoItem.partName}" (${nanoItem.partName.trim().length} chars)`,
+      };
     }
   }
 
