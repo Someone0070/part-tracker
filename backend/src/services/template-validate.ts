@@ -1,40 +1,64 @@
 import RE2 from "re2";
 import type { ExtractionRules } from "./template-types.js";
-import { applyTemplate, safeMatch } from "./template-apply.js";
+import { applyTemplate } from "./template-apply.js";
 import type { LlmExtraction } from "./template-llm.js";
+import { parseSubtotal } from "./validation-stack.js";
 
 export interface ValidationResult {
   valid: boolean;
   reason?: string;
 }
 
-function collectLiterals(extraction: LlmExtraction): string[] {
-  const literals: string[] = [];
-  for (const item of extraction.items) {
-    if (item.partNumber) literals.push(item.partNumber);
-    if (item.partName && item.partName.length > 3) literals.push(item.partName);
-    if (item.unitPrice != null) literals.push(String(item.unitPrice));
-  }
-  return literals.filter((v) => v.length > 2);
-}
+export type ConfidenceTier = 1 | 2 | 3;
 
-function literalFraction(pattern: string): number {
-  const stripped = pattern.replace(/\\[dDsSwWbBtnrfv.+*?^$|{}()\[\]]/g, "");
-  const withoutSyntax = stripped.replace(/[+*?.^$|{}()\[\]\\]/g, "");
-  const alphanumOnly = withoutSyntax.replace(/[^a-zA-Z0-9]/g, "");
-  return pattern.length > 0 ? alphanumOnly.length / pattern.length : 0;
+/**
+ * Determine confidence tier based on available ground truth.
+ * Tier 1: nano passes math check (strongest)
+ * Tier 2: part number agreement without math (moderate)
+ * Tier 3: neither available (no confidence)
+ */
+export function determineConfidenceTier(
+  nanoExtraction: LlmExtraction,
+  rawText: string,
+  textPartNumbers: string[]
+): ConfidenceTier {
+  // Tier 1: nano passes math check
+  const subtotal = parseSubtotal(rawText);
+  if (subtotal != null) {
+    const nanoSum = nanoExtraction.items.reduce(
+      (sum, i) => sum + (i.unitPrice ?? 0) * i.quantity,
+      0
+    );
+    if (Math.abs(Math.round(nanoSum * 100) / 100 - subtotal) < 0.01) {
+      return 1;
+    }
+  }
+
+  // Tier 2: part number agreement without math
+  if (textPartNumbers.length > 0) {
+    const nanoPNs = new Set(nanoExtraction.items.map((i) => i.partNumber.toUpperCase()));
+    const overlap = textPartNumbers.filter((pn) => nanoPNs.has(pn));
+    if (overlap.length / textPartNumbers.length >= 0.8) {
+      return 2;
+    }
+  }
+
+  return 3;
 }
 
 /**
- * Validate a template's item extraction capability.
- * Only checks line item regex -- metadata/totals are handled by nano fill-in.
+ * Validate a generated/repaired template against nano's extraction.
+ * Tier 1: math gate + nano cross-check (part numbers + prices)
+ * Tier 2: nano cross-check only (part numbers + quantities, NO prices)
+ * Tier 3: never reaches here (blocked by confidence gate)
  */
 export function validateTemplate(
-  text: string,
+  rawText: string,
   rules: ExtractionRules,
-  extraction: LlmExtraction
+  nanoExtraction: LlmExtraction,
+  tier: ConfidenceTier
 ): ValidationResult {
-  // Check RE2 compatibility
+  // RE2 compatibility check
   const patterns = [rules.lineItems.start, rules.lineItems.end, rules.lineItems.row];
   for (const pattern of patterns) {
     try {
@@ -44,76 +68,66 @@ export function validateTemplate(
     }
   }
 
-  // Check for hardcoded literals in row regex
-  const literals = collectLiterals(extraction);
-  for (const literal of literals) {
-    if (rules.lineItems.row.includes(literal)) {
-      return { valid: false, reason: `Row regex contains literal value "${literal}": ${rules.lineItems.row}` };
-    }
-    if (rules.lineItems.start.includes(literal)) {
-      return { valid: false, reason: `Start regex contains literal value "${literal}": ${rules.lineItems.start}` };
-    }
-  }
-
-  // Check named groups
+  // Check named groups exist in row regex
   const row = rules.lineItems.row;
-  const requiredGroups = ["partNumber", "quantity", "unitPrice"];
-  for (const group of requiredGroups) {
+  for (const group of ["partNumber", "quantity", "unitPrice"]) {
     if (!row.includes(`(?<${group}>`)) {
       return { valid: false, reason: `Row regex missing named group: ${group}` };
     }
   }
 
-  // Check literal fraction
-  const rowFrac = literalFraction(row);
-  if (rowFrac > 0.5) {
-    return { valid: false, reason: `Row regex is ${Math.round(rowFrac * 100)}% literal: ${row}` };
+  // Apply template to raw text
+  const result = applyTemplate(rawText, rules);
+  if (result.items.length === 0) {
+    return { valid: false, reason: "Template extracted 0 items" };
   }
 
-  // Check extraction: does the template actually extract items?
-  const result = applyTemplate(text, rules);
-
-  if (result.items.length < extraction.items.length) {
-    // Diagnose why extraction failed
-    const startMatch = safeMatch(text, rules.lineItems.start, "i");
-    let diag = `start=${startMatch ? "MATCHED" : "NO_MATCH"}`;
-    if (startMatch && startMatch.index != null) {
-      const afterStart = text.slice(startMatch.index + startMatch[0].length);
-      const endMatch = safeMatch(afterStart, rules.lineItems.end, "i");
-      const tableText = endMatch?.index != null ? afterStart.slice(0, endMatch.index) : afterStart;
-      diag += ` end=${endMatch ? "MATCHED" : "NO_MATCH"} tableLen=${tableText.length}`;
-      // Show first 200 chars of table region
-      const preview = tableText.slice(0, 200).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
-      diag += ` tablePreview="${preview}"`;
-    }
-    console.warn(`[Template] extraction diagnostic: ${diag}`);
-    console.warn(`[Template] patterns: start=/${rules.lineItems.start}/ end=/${rules.lineItems.end}/ row=/${rules.lineItems.row}/`);
-
-    return {
-      valid: false,
-      reason: `Template extracted ${result.items.length} items, LLM extracted ${extraction.items.length} [${diag}]`,
-    };
-  }
-
-  // Check part numbers match
+  // Part number gate (both tiers)
   const templatePNs = new Set(result.items.map((i) => i.partNumber));
-  const llmPNs = extraction.items.map((i) => i.partNumber).filter(Boolean);
-  for (const pn of llmPNs) {
+  const nanoPNs = nanoExtraction.items.map((i) => i.partNumber).filter(Boolean);
+  for (const pn of nanoPNs) {
     if (!templatePNs.has(pn)) {
       return { valid: false, reason: `Template missing part number: ${pn}` };
     }
   }
 
-  // Check prices match
-  for (const llmItem of extraction.items) {
-    if (llmItem.unitPrice == null) continue;
-    const tplItem = result.items.find((i) => i.partNumber === llmItem.partNumber);
-    if (!tplItem || tplItem.unitPrice == null) continue;
-    if (Math.abs(tplItem.unitPrice - llmItem.unitPrice) > 0.01) {
+  // Quantity gate (both tiers)
+  for (const nanoItem of nanoExtraction.items) {
+    const tplItem = result.items.find((i) => i.partNumber === nanoItem.partNumber);
+    if (tplItem && tplItem.quantity !== nanoItem.quantity) {
       return {
         valid: false,
-        reason: `Price mismatch for ${llmItem.partNumber}: template=${tplItem.unitPrice}, llm=${llmItem.unitPrice}`,
+        reason: `Quantity mismatch for ${nanoItem.partNumber}: template=${tplItem.quantity}, nano=${nanoItem.quantity}`,
       };
+    }
+  }
+
+  if (tier === 1) {
+    // Price gate (tier 1 only)
+    for (const nanoItem of nanoExtraction.items) {
+      if (nanoItem.unitPrice == null) continue;
+      const tplItem = result.items.find((i) => i.partNumber === nanoItem.partNumber);
+      if (!tplItem || tplItem.unitPrice == null) continue;
+      if (Math.abs(tplItem.unitPrice - nanoItem.unitPrice) > 0.01) {
+        return {
+          valid: false,
+          reason: `Price mismatch for ${nanoItem.partNumber}: template=${tplItem.unitPrice}, nano=${nanoItem.unitPrice}`,
+        };
+      }
+    }
+
+    // Math gate (tier 1 only)
+    const subtotal = parseSubtotal(rawText);
+    if (subtotal != null) {
+      const computed = Math.round(
+        result.items.reduce((sum, i) => sum + (i.unitPrice ?? 0) * i.quantity, 0) * 100
+      ) / 100;
+      if (Math.abs(computed - subtotal) > 0.01) {
+        return {
+          valid: false,
+          reason: `Math mismatch: template sum=${computed}, subtotal=${subtotal}`,
+        };
+      }
     }
   }
 
