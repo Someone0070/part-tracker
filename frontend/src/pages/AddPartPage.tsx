@@ -1,26 +1,21 @@
 import { useState, useRef, useCallback, type ChangeEvent, type DragEvent } from "react";
-import { api } from "../api/client";
+import { api, apiUpload, ApiError } from "../api/client";
 import { Icon } from "../components/Icon";
 import { AddPartForm } from "../components/AddPartForm";
+import { IMAGE_ACCEPT, ImagePreparationError, prepareImageFile } from "../lib/image-upload";
 
 type Tab = "manual" | "scan" | "bulk";
 
 interface ScannedPart {
   id: string;
+  file: File;
   partNumber: string;
   brand: string;
   description: string;
-  status: "pending" | "adding" | "added" | "error";
+  status: "pending" | "scanning" | "adding" | "added" | "error";
   error?: string;
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve((reader.result as string).split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+  errorStage?: "scan" | "add";
+  retryable?: boolean;
 }
 
 function useDropZone(onFiles: (files: File[]) => void, accept?: string) {
@@ -76,27 +71,42 @@ function useDropZone(onFiles: (files: File[]) => void, accept?: string) {
 function ScanTab() {
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [scanRetryable, setScanRetryable] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [partNumber, setPartNumber] = useState("");
   const [brand, setBrand] = useState("");
   const [description, setDescription] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  async function processFile(file: File) {
+  async function processFile(file: File, prepared = false) {
     setScanError("");
     setScanning(true);
+    setUploadProgress(0);
+    let uploadFile = file;
+    let canRetry = prepared;
     try {
-      const base64 = await fileToBase64(file);
-      const result = await api<{ partNumber?: string; brand?: string; description?: string }>(
+      if (!prepared) {
+        uploadFile = await prepareImageFile(file);
+        canRetry = true;
+      }
+      setSelectedFile(uploadFile);
+      const result = await apiUpload<{ partNumber?: string; brand?: string; description?: string }>(
         "/api/parts/ocr",
-        { method: "POST", body: JSON.stringify({ image: base64 }) }
+        uploadFile,
+        { onProgress: setUploadProgress },
       );
       setPartNumber(result.partNumber ?? "");
       setBrand(result.brand ?? "");
       setDescription(result.description ?? "");
       setScanned(true);
+      setSelectedFile(null);
+      setScanRetryable(false);
     } catch (err: any) {
-      setScanError(err.message || "OCR failed");
+      setSelectedFile(uploadFile);
+      setScanRetryable(canRetry && (!(err instanceof ApiError) || err.retryable !== false));
+      setScanError(err.message || "Photo scan failed. Tap Retry to try again");
     } finally {
       setScanning(false);
       if (inputRef.current) inputRef.current.value = "";
@@ -110,7 +120,7 @@ function ScanTab() {
 
   const { dragging, handlers: dropHandlers } = useDropZone(
     (files) => { if (files[0]) processFile(files[0]); },
-    "image/*"
+    IMAGE_ACCEPT,
   );
 
   function reset() {
@@ -119,6 +129,9 @@ function ScanTab() {
     setBrand("");
     setDescription("");
     setScanError("");
+    setSelectedFile(null);
+    setUploadProgress(0);
+    setScanRetryable(false);
   }
 
   if (!scanned) {
@@ -128,14 +141,19 @@ function ScanTab() {
           Take a photo of the part label to auto-fill the part number.
         </p>
         {scanError && (
-          <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
-            {scanError}
+          <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400 flex items-center justify-between gap-3">
+            <span>{scanError}</span>
+            {selectedFile && scanRetryable && (
+              <button type="button" className="font-semibold underline shrink-0" onClick={() => processFile(selectedFile, true)}>
+                Retry
+              </button>
+            )}
           </div>
         )}
         {scanning ? (
           <div className="flex items-center justify-center gap-2 px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
             <Icon name="hourglass_top" size={18} className="animate-spin" />
-            Analyzing photo...
+            {uploadProgress < 100 ? `Uploading ${uploadProgress}%...` : "Analyzing photo..."}
           </div>
         ) : (
           <label
@@ -153,7 +171,7 @@ function ScanTab() {
             <input
               ref={inputRef}
               type="file"
-              accept="image/*"
+              accept={IMAGE_ACCEPT}
               className="sr-only"
               onChange={handleCapture}
             />
@@ -194,40 +212,51 @@ function ScanTab() {
 function BulkScanTab() {
   const [parts, setParts] = useState<ScannedPart[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0 });
+  const [scanProgress, setScanProgress] = useState({ done: 0, total: 0, upload: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
+
+  async function scanFile(file: File, alreadyPrepared = false): Promise<ScannedPart> {
+    const id = crypto.randomUUID();
+    let uploadFile = file;
+    try {
+      if (!alreadyPrepared) uploadFile = await prepareImageFile(file);
+      const result = await apiUpload<{ partNumber?: string; brand?: string; description?: string }>(
+        "/api/parts/ocr",
+        uploadFile,
+        { onProgress: (upload) => setScanProgress((current) => ({ ...current, upload })) },
+      );
+      return {
+        id,
+        file: uploadFile,
+        partNumber: result.partNumber ?? "",
+        brand: result.brand ?? "",
+        description: result.description ?? "",
+        status: "pending",
+      };
+    } catch (error) {
+      return {
+        id,
+        file: uploadFile,
+        partNumber: "",
+        brand: "",
+        description: "",
+        status: "error",
+        error: error instanceof Error ? error.message : `Failed to scan ${file.name}`,
+        errorStage: "scan",
+        retryable: !(error instanceof ImagePreparationError) && (!(error instanceof ApiError) || error.retryable !== false),
+      };
+    }
+  }
 
   async function processFiles(files: File[]) {
     if (files.length === 0) return;
     setScanning(true);
-    setScanProgress({ done: 0, total: files.length });
+    setScanProgress({ done: 0, total: files.length, upload: 0 });
 
     const results: ScannedPart[] = [];
     for (let i = 0; i < files.length; i++) {
-      try {
-        const base64 = await fileToBase64(files[i]);
-        const result = await api<{ partNumber?: string; brand?: string; description?: string }>(
-          "/api/parts/ocr",
-          { method: "POST", body: JSON.stringify({ image: base64 }) }
-        );
-        results.push({
-          id: crypto.randomUUID(),
-          partNumber: result.partNumber ?? "",
-          brand: result.brand ?? "",
-          description: result.description ?? "",
-          status: "pending",
-        });
-      } catch {
-        results.push({
-          id: crypto.randomUUID(),
-          partNumber: "",
-          brand: "",
-          description: "",
-          status: "error",
-          error: `Failed to scan ${files[i].name}`,
-        });
-      }
-      setScanProgress({ done: i + 1, total: files.length });
+      results.push(await scanFile(files[i]));
+      setScanProgress({ done: i + 1, total: files.length, upload: 0 });
     }
 
     setParts((prev) => [...prev, ...results]);
@@ -241,11 +270,21 @@ function BulkScanTab() {
 
   const { dragging, handlers: dropHandlers } = useDropZone(
     (files) => processFiles(files),
-    "image/*"
+    IMAGE_ACCEPT,
   );
 
   function removePart(id: string) {
     setParts((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  async function retryPart(part: ScannedPart) {
+    setParts((current) => current.map((item) => item.id === part.id
+      ? { ...item, status: "scanning", error: undefined }
+      : item));
+    const rescanned = await scanFile(part.file, part.file.type === "image/jpeg");
+    setParts((current) => current.map((item) => item.id === part.id
+      ? { ...rescanned, id: part.id }
+      : item));
   }
 
   function updatePart(id: string, field: keyof Pick<ScannedPart, "partNumber" | "brand">, value: string) {
@@ -271,7 +310,9 @@ function BulkScanTab() {
         setParts((prev) => prev.map((p) => (p.id === part.id ? { ...p, status: "added" } : p)));
       } catch (err: any) {
         setParts((prev) =>
-          prev.map((p) => (p.id === part.id ? { ...p, status: "error", error: err.message || "Failed" } : p))
+          prev.map((p) => (p.id === part.id
+            ? { ...p, status: "error", error: err.message || "Failed to add part", errorStage: "add" }
+            : p))
         );
       }
     }
@@ -289,7 +330,8 @@ function BulkScanTab() {
       {scanning ? (
         <div className="flex items-center justify-center gap-2 px-4 py-6 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
           <Icon name="hourglass_top" size={18} className="animate-spin" />
-          Scanning {scanProgress.done}/{scanProgress.total}...
+          Scanning {scanProgress.done + 1}/{scanProgress.total}
+          {scanProgress.upload > 0 && scanProgress.upload < 100 ? ` — uploading ${scanProgress.upload}%` : "..."}
         </div>
       ) : (
         <label
@@ -311,7 +353,7 @@ function BulkScanTab() {
           <input
             ref={inputRef}
             type="file"
-            accept="image/*"
+            accept={IMAGE_ACCEPT}
             multiple
             className="sr-only"
             onChange={handleFiles}
@@ -337,7 +379,7 @@ function BulkScanTab() {
                   <Icon name="check_circle" size={18} className="text-green-600 dark:text-green-400 shrink-0" />
                 ) : part.status === "error" ? (
                   <Icon name="error" size={18} className="text-red-500 dark:text-red-400 shrink-0" />
-                ) : part.status === "adding" ? (
+                ) : part.status === "adding" || part.status === "scanning" ? (
                   <Icon name="hourglass_top" size={18} className="text-gray-400 animate-spin shrink-0" />
                 ) : (
                   <Icon name="label" size={18} className="text-gray-400 dark:text-gray-500 shrink-0" />
@@ -376,12 +418,21 @@ function BulkScanTab() {
                   )}
                 </div>
 
-                {part.status === "pending" && (
+                {part.status === "error" && (part.errorStage === "add" || part.retryable) && (
                   <button
                     type="button"
-                    onClick={() => removePart(part.id)}
-                    className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    onClick={() => part.errorStage === "scan"
+                      ? retryPart(part)
+                      : setParts((current) => current.map((item) => item.id === part.id
+                        ? { ...item, status: "pending", error: undefined, errorStage: undefined }
+                        : item))}
+                    className="px-2 py-1 text-xs font-semibold rounded text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/30"
                   >
+                    Retry
+                  </button>
+                )}
+                {(part.status === "pending" || part.status === "error") && (
+                  <button type="button" onClick={() => removePart(part.id)} className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
                     <Icon name="close" size={16} />
                   </button>
                 )}

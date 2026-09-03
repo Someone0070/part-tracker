@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert";
-import { parts, crossReferences, settings, inventoryEvents, ebayProcessedOrders, ebayPollWatermark, sessions } from "./schema.js";
+import { parts, crossReferences, settings, inventoryEvents, ebayProcessedOrders, ebayPollWatermark, sessions, imageUploadAttempts } from "./schema.js";
 
 describe("schema", () => {
   it("parts table has all required columns", () => {
@@ -48,5 +48,14 @@ describe("schema", () => {
   it("ebay_processed_orders has quarantine support", () => {
     const cols = Object.keys(ebayProcessedOrders);
     assert.ok(cols.includes("quarantineReason"));
+  });
+
+  it("image upload attempts retain diagnostics without storing image data", () => {
+    const cols = Object.keys(imageUploadAttempts);
+    for (const name of ["requestId", "kind", "status", "originalMime", "originalBytes", "normalizedMime", "normalizedBytes", "errorCategory", "providerStatus", "durationMs", "createdAt"]) {
+      assert.ok(cols.includes(name), `missing image_upload_attempts.${name}`);
+    }
+    assert.ok(!cols.includes("image"));
+    assert.ok(!cols.includes("filename"));
   });
 });

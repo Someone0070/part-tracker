@@ -5,77 +5,33 @@ import { eq, desc } from "drizzle-orm";
 import { validateBody, createApplianceSchema, updateApplianceSchema, addPartSchema } from "../middleware/validate.js";
 import { addPart } from "../services/inventory.js";
 import { extractApplianceInfo } from "../services/ocr.js";
-import { isR2Configured, uploadImage } from "../services/r2.js";
+import { uploadImage } from "../services/r2.js";
 import { requireScope } from "../middleware/auth.js";
+import { receiveImage } from "../middleware/image-upload.js";
+import { imageHandler } from "./image-handler.js";
 
 const router = Router();
 
 // POST /api/appliances/ocr — extract model/serial from sticker photo
 // MUST be before /:id routes so Express doesn't parse "ocr" as an ID
-router.post("/ocr", requireScope("appliances:write"), async (req, res) => {
-  const { image } = req.body as { image?: unknown };
-
-  if (typeof image !== "string") {
-    res.status(400).json({ error: "image must be a base64 string" });
-    return;
-  }
-
-  // ~10MB base64 is roughly 13.6MB raw; enforce 10MB on the string length
-  if (image.length > 10 * 1024 * 1024) {
-    res.status(400).json({ error: "image exceeds 10MB limit" });
-    return;
-  }
-
-  try {
-    const result = await extractApplianceInfo(image);
-    res.json(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message === "not configured") {
-      res.status(503).json({ error: "OCR service not configured" });
-      return;
-    }
-    console.error("OCR error:", err);
-    res.status(500).json({ error: "OCR failed" });
-  }
-});
+router.post(
+  "/ocr",
+  requireScope("appliances:write"),
+  receiveImage,
+  imageHandler("appliance_ocr", (image, signal) => extractApplianceInfo(image, signal)),
+);
 
 // POST /api/appliances/upload — upload unit photo to R2
-router.post("/upload", requireScope("appliances:write"), async (req, res) => {
-  try {
-    if (!isR2Configured()) {
-      res.status(503).json({
-        error: "Image storage not configured",
-        message: "R2 storage is not set up yet. Photos cannot be saved at this time.",
-      });
-      return;
-    }
-    const { image, contentType } = req.body;
-    if (!image || typeof image !== "string") {
-      res.status(400).json({ error: "image (base64 string) required" });
-      return;
-    }
-    if (image.length > 10 * 1024 * 1024) {
-      res.status(400).json({ error: "Image too large (max 10MB)" });
-      return;
-    }
-    const buffer = Buffer.from(image, "base64");
-    const key = `appliances/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
-    const type = contentType || "image/jpeg";
-    await uploadImage(key, buffer, type);
-    res.json({ key });
-  } catch (err: any) {
-    if (err.message?.includes("not configured")) {
-      res.status(503).json({
-        error: "Image storage not configured",
-        message: "R2 storage is not set up yet. Photos cannot be saved at this time.",
-      });
-      return;
-    }
-    console.error("Upload error:", err);
-    res.status(500).json({ error: "Upload failed" });
-  }
-});
+router.post(
+  "/upload",
+  requireScope("appliances:write"),
+  receiveImage,
+  imageHandler("appliance_photo", async (image, signal, uploadId) => {
+    const key = `appliances/${uploadId}.jpg`;
+    await uploadImage(key, image.data, image.mime, signal);
+    return { key };
+  }),
+);
 
 // GET /api/appliances — list with server-side pagination
 router.get("/", requireScope("appliances:read"), async (req, res) => {

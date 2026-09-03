@@ -77,6 +77,24 @@ export const inventoryEvents = pgTable("inventory_events", {
   index("inventory_events_part_created_idx").on(table.partId, table.createdAt),
 ]);
 
+export const imageUploadAttempts = pgTable("image_upload_attempts", {
+  id: serial("id").primaryKey(),
+  requestId: text("request_id").notNull().unique(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull(),
+  originalMime: text("original_mime"),
+  originalBytes: integer("original_bytes"),
+  normalizedMime: text("normalized_mime"),
+  normalizedBytes: integer("normalized_bytes"),
+  errorCategory: text("error_category"),
+  providerStatus: integer("provider_status"),
+  durationMs: integer("duration_ms").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("image_upload_attempts_created_at_idx").on(table.createdAt),
+  index("image_upload_attempts_status_kind_idx").on(table.status, table.kind),
+]);
+
 export const ebayProcessedOrders = pgTable("ebay_processed_orders", {
   id: serial("id").primaryKey(),
   ebayOrderId: text("ebay_order_id").notNull(),

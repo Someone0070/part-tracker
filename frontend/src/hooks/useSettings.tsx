@@ -14,6 +14,9 @@ export interface AppSettings {
     prefix: string | null;
     scopes: string[];
   };
+  imageStorage: {
+    configured: boolean;
+  };
 }
 
 interface SettingsContextValue {
