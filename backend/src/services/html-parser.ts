@@ -22,6 +22,12 @@ export function redactForLlm(html: string): string {
   const $ = cheerio.load(html);
   $("script, style, noscript, iframe, svg").remove();
   $("nav, footer, [role='navigation']").remove();
+  $("*").each((_, element) => {
+    const marker = `${$(element).attr("id") ?? ""} ${$(element).attr("class") ?? ""}`;
+    if (/(?:^|[\s_-])(?:shipping-address|ship-to|billing-info|billing-address|payment-info|payment-method|cardholder)(?:$|[\s_-])/i.test(marker)) {
+      $(element).remove();
+    }
+  });
 
   let text = $.text();
 
@@ -32,13 +38,20 @@ export function redactForLlm(html: string): string {
     .replace(/ending in \d{4}/gi, "ending in [XXXX]");
 
   text = text.replace(/\s+/g, " ").trim();
-  return text.slice(0, 8000);
+  return text.slice(0, 6000);
 }
 
 export function scrubHtmlForSelectors(html: string): string {
   const $ = cheerio.load(html);
 
   $("script, style, noscript, iframe, svg").remove();
+
+  $("*").each((_, element) => {
+    const marker = `${$(element).attr("id") ?? ""} ${$(element).attr("class") ?? ""}`;
+    if (/(?:^|[\s_-])(?:shipping-address|ship-to|billing-info|billing-address|payment-info|payment-method|cardholder)(?:$|[\s_-])/i.test(marker)) {
+      $(element).text("[REDACTED]");
+    }
+  });
 
   const KEEP_ATTRS = new Set(["id", "class", "role", "data-testid", "type", "name", "for"]);
   $("*").each((_, el) => {

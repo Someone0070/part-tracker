@@ -2,8 +2,9 @@ import { Router } from "express";
 import crypto from "crypto";
 import { getDb } from "../db/index.js";
 import { invalidateAuthCache } from "../middleware/auth.js";
-import { settings } from "../db/schema.js";
+import { imageUploadAttempts, settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { validateBody, updateSettingsSchema } from "../middleware/validate.js";
 import { cacheControl } from "../middleware/timing.js";
 import {
@@ -27,6 +28,33 @@ router.get("/", cacheControl(30), async (req, res) => {
   } catch (err) {
     console.error("Get settings error:", err);
     res.status(500).json({ error: "Internal error" });
+  }
+});
+
+// GET /api/settings/image-attempts/summary — privacy-safe upload health counts
+router.get("/image-attempts/summary", cacheControl(30), async (req, res) => {
+  try {
+    const requestedDays = Number(req.query.days);
+    const days = Number.isInteger(requestedDays) ? Math.min(90, Math.max(1, requestedDays)) : 7;
+    const rows = await getDb()
+      .select({
+        kind: imageUploadAttempts.kind,
+        status: imageUploadAttempts.status,
+        errorCategory: imageUploadAttempts.errorCategory,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(imageUploadAttempts)
+      .where(sql`${imageUploadAttempts.createdAt} >= now() - (${days} * interval '1 day')`)
+      .groupBy(imageUploadAttempts.kind, imageUploadAttempts.status, imageUploadAttempts.errorCategory);
+
+    const total = rows.reduce((sum, row) => sum + Number(row.count), 0);
+    const failed = rows
+      .filter((row) => row.status === "failed")
+      .reduce((sum, row) => sum + Number(row.count), 0);
+    res.json({ days, total, succeeded: total - failed, failed, breakdown: rows });
+  } catch (error) {
+    console.error("Image attempt summary error:", error);
+    res.status(500).json({ error: "Could not load image upload health" });
   }
 });
 

@@ -78,6 +78,13 @@
       "when": 1775955600000,
       "tag": "0010_learned_prefixes",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788462000000,
+      "tag": "0011_image_upload_attempts",
+      "breakpoints": true
     }
   ]
 }

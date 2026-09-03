@@ -1,6 +1,7 @@
 import { getDb } from "../db/index.js";
 import { settings, ebayProcessedOrders } from "../db/schema.js";
 import { isNotNull, sql } from "drizzle-orm";
+import { isR2Configured } from "./r2.js";
 
 export interface AppSettingsSummary {
   crossRefEnabled: boolean;
@@ -14,6 +15,9 @@ export interface AppSettingsSummary {
     exists: boolean;
     prefix: string | null;
     scopes: string[];
+  };
+  imageStorage: {
+    configured: boolean;
   };
 }
 
@@ -66,6 +70,9 @@ export async function getCachedSettingsSnapshot(): Promise<SettingsSnapshot | nu
       exists: !!row.apiKeyHash,
       prefix: row.apiKeyPrefix || null,
       scopes,
+    },
+    imageStorage: {
+      configured: isR2Configured(),
     },
     passwordVersion: row.passwordVersion,
   };

@@ -32,3 +32,20 @@ npm run dev
 - Cross-reference lookups for interchangeable part numbers
 - eBay integration for listing sync and sold-item depletion
 - Appliance tracking with photo uploads to R2
+
+## Image ingestion
+
+Part-label and appliance-label scans are converted in the browser to an
+orientation-corrected, bounded JPEG and uploaded as multipart binary data. The
+backend independently validates and normalizes the bytes before calling OCR or
+R2. Failed network requests retain the selected photo and can be retried.
+
+Persistent appliance photos are enabled automatically when all four `R2_*`
+variables in `backend/.env.example` are configured. OCR requires `ZAI_API_KEY`.
+
+Image attempts are recorded without filenames or image bytes. Authenticated
+upload-health counts are available from:
+
+```text
+GET /api/settings/image-attempts/summary?days=7
+```

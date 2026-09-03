@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express from "express";
+import express, { type ErrorRequestHandler } from "express";
 import cookieParser from "cookie-parser";
 import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { getDb } from "./db/index.js";
@@ -91,6 +91,29 @@ app.use("/api/appliances", appliancesRouter);
 app.use("/api/vendor-cookies", vendorCookiesRouter);
 app.use("/api/import", importRouter);
 app.use("/api/vendor-templates", vendorTemplatesRouter);
+
+const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+  const status = typeof error?.status === "number" ? error.status : 500;
+  if (status === 413 || error?.type === "entity.too.large") {
+    res.status(413).json({
+      error: "Upload is too large. Choose a smaller image or document",
+      errorType: "request_too_large",
+      retryable: false,
+    });
+    return;
+  }
+  if (error instanceof SyntaxError && "body" in error) {
+    res.status(400).json({
+      error: "Request body is malformed",
+      errorType: "invalid_request",
+      retryable: false,
+    });
+    return;
+  }
+  console.error("Unhandled request error:", error);
+  res.status(500).json({ error: "Internal error", errorType: "internal_error", retryable: true });
+};
+app.use(errorHandler);
 
 // Start server
 async function start() {

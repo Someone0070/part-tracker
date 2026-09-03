@@ -1,3 +1,7 @@
+import type { PreparedImage } from "./image-input.js";
+import { imageToDataUri } from "./image-input.js";
+import { fetchWithRetry } from "./http-retry.js";
+
 export interface OcrResult {
   modelNumber: string | null;
   serialNumber: string | null;
@@ -8,6 +12,16 @@ export interface OcrResult {
 
 const ZAI_OCR_URL = "https://api.z.ai/api/paas/v4/layout_parsing";
 const ZAI_CHAT_URL = "https://api.z.ai/api/paas/v4/chat/completions";
+
+export class OcrProviderError extends Error {
+  constructor(
+    public readonly providerStatus: number,
+    public readonly providerBody: string,
+  ) {
+    super(`OCR provider rejected the normalized image (${providerStatus})`);
+    this.name = "OcrProviderError";
+  }
+}
 
 const MODEL_PATTERNS = [
   /model\s*(?:#|no\.?|number)?[\s:]*([A-Z0-9][\w\-.\/]{3,30})/i,
@@ -69,7 +83,8 @@ function extractViaRegex(
 }
 
 async function extractViaChat(
-  rawText: string
+  rawText: string,
+  signal?: AbortSignal,
 ): Promise<Pick<OcrResult, "modelNumber" | "serialNumber" | "brand" | "applianceType">> {
   const apiKey = process.env.ZAI_API_KEY;
   if (!apiKey) {
@@ -77,7 +92,7 @@ async function extractViaChat(
   }
 
   try {
-    const res = await fetch(ZAI_CHAT_URL, {
+    const res = await fetchWithRetry(ZAI_CHAT_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -99,7 +114,7 @@ async function extractViaChat(
           },
         ],
       }),
-    });
+    }, { attempts: 1, timeoutMs: 15_000, signal });
 
     if (!res.ok) {
       return { modelNumber: null, serialNumber: null, brand: null, applianceType: null };
@@ -127,7 +142,8 @@ async function extractViaChat(
       brand: typeof parsed.brand === "string" ? parsed.brand : null,
       applianceType: parsedType && validTypes.has(parsedType) ? parsedType : null,
     };
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     return { modelNumber: null, serialNumber: null, brand: null, applianceType: null };
   }
 }
@@ -152,7 +168,8 @@ const PART_NUMBER_PATTERNS = [
 ];
 
 async function extractPartViaChat(
-  rawText: string
+  rawText: string,
+  signal?: AbortSignal,
 ): Promise<Pick<PartOcrResult, "partNumber" | "brand" | "description">> {
   const apiKey = process.env.ZAI_API_KEY;
   if (!apiKey) {
@@ -160,7 +177,7 @@ async function extractPartViaChat(
   }
 
   try {
-    const res = await fetch(ZAI_CHAT_URL, {
+    const res = await fetchWithRetry(ZAI_CHAT_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -182,7 +199,7 @@ async function extractPartViaChat(
           },
         ],
       }),
-    });
+    }, { attempts: 1, timeoutMs: 15_000, signal });
 
     if (!res.ok) {
       return { partNumber: null, brand: null, description: null };
@@ -205,21 +222,31 @@ async function extractPartViaChat(
       brand: typeof parsed.brand === "string" ? parsed.brand?.toLowerCase() : null,
       description: typeof parsed.description === "string" ? parsed.description : null,
     };
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     return { partNumber: null, brand: null, description: null };
   }
 }
 
-export async function extractPartInfo(imageBase64: string): Promise<PartOcrResult> {
+interface OcrPayload {
+  content?: string;
+  text?: string;
+  md_results?: string;
+  layout_details?: Array<{ content?: string }> | Array<Array<{ content?: string }>>;
+}
+
+function layoutText(details: OcrPayload["layout_details"]): string {
+  if (!details) return "";
+  return details.flat().map((item) => item.content ?? "").join("\n");
+}
+
+async function recognizeImage(image: PreparedImage, signal?: AbortSignal): Promise<string> {
   const apiKey = process.env.ZAI_API_KEY;
   if (!apiKey) {
     throw new Error("not configured");
   }
 
-  const hasPrefix = imageBase64.startsWith("data:");
-  const dataUri = hasPrefix ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
-
-  const ocrRes = await fetch(ZAI_OCR_URL, {
+  const ocrRes = await fetchWithRetry(ZAI_OCR_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -227,27 +254,30 @@ export async function extractPartInfo(imageBase64: string): Promise<PartOcrResul
     },
     body: JSON.stringify({
       model: "glm-ocr",
-      file: dataUri,
+      file: imageToDataUri(image),
     }),
+  }, {
+    attempts: 2,
+    timeoutMs: 25_000,
+    signal,
   });
 
   if (!ocrRes.ok) {
     const body = await ocrRes.text().catch(() => "");
-    throw new Error(`OCR API error ${ocrRes.status}: ${body}`);
+    throw new OcrProviderError(ocrRes.status, body.slice(0, 500));
   }
 
-  const ocrData = (await ocrRes.json()) as {
-    content?: string;
-    text?: string;
-    md_results?: string;
-    layout_details?: Array<{ content?: string }>;
-  };
-  const rawText =
+  const ocrData = (await ocrRes.json()) as OcrPayload;
+  return (
     ocrData.md_results ??
     ocrData.content ??
     ocrData.text ??
-    ocrData.layout_details?.map((d) => d.content ?? "").join("\n") ??
-    "";
+    layoutText(ocrData.layout_details)
+  );
+}
+
+export async function extractPartInfo(image: PreparedImage, signal?: AbortSignal): Promise<PartOcrResult> {
+  const rawText = await recognizeImage(image, signal);
 
   // Try regex first
   const partNumber = tryMatch(PART_NUMBER_PATTERNS, rawText);
@@ -256,7 +286,7 @@ export async function extractPartInfo(imageBase64: string): Promise<PartOcrResul
 
   // LLM fallback if regex missed the part number
   if (!partNumber) {
-    const fallback = await extractPartViaChat(rawText);
+    const fallback = await extractPartViaChat(rawText, signal);
     return {
       partNumber: fallback.partNumber,
       brand: brand ?? fallback.brand,
@@ -268,50 +298,13 @@ export async function extractPartInfo(imageBase64: string): Promise<PartOcrResul
   return { partNumber, brand, description: null, rawText };
 }
 
-export async function extractApplianceInfo(imageBase64: string): Promise<OcrResult> {
-  const apiKey = process.env.ZAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("not configured");
-  }
-
-  // Z.AI OCR requires a data URI with MIME type prefix so it can detect the format
-  const hasPrefix = imageBase64.startsWith("data:");
-  const dataUri = hasPrefix ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
-
-  const ocrRes = await fetch(ZAI_OCR_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "glm-ocr",
-      file: dataUri,
-    }),
-  });
-
-  if (!ocrRes.ok) {
-    const body = await ocrRes.text().catch(() => "");
-    throw new Error(`OCR API error ${ocrRes.status}: ${body}`);
-  }
-
-  const ocrData = (await ocrRes.json()) as {
-    content?: string;
-    text?: string;
-    md_results?: string;
-    layout_details?: Array<{ content?: string }>;
-  };
-  const rawText =
-    ocrData.md_results ??
-    ocrData.content ??
-    ocrData.text ??
-    ocrData.layout_details?.map((d) => d.content ?? "").join("\n") ??
-    "";
+export async function extractApplianceInfo(image: PreparedImage, signal?: AbortSignal): Promise<OcrResult> {
+  const rawText = await recognizeImage(image, signal);
 
   let extracted = extractViaRegex(rawText);
 
   if (!extracted.modelNumber || !extracted.serialNumber || !extracted.applianceType) {
-    const fallback = await extractViaChat(rawText);
+    const fallback = await extractViaChat(rawText, signal);
     extracted = {
       modelNumber: extracted.modelNumber ?? fallback.modelNumber,
       serialNumber: extracted.serialNumber ?? fallback.serialNumber,

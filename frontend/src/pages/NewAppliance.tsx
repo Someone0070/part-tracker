@@ -1,7 +1,9 @@
-import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
+import { useEffect, useState, useRef, type FormEvent, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ApiError } from "../api/client";
+import { api, apiUpload, ApiError } from "../api/client";
 import { Icon } from "../components/Icon";
+import { useSettings } from "../hooks/useSettings";
+import { IMAGE_ACCEPT, prepareImageFile } from "../lib/image-upload";
 
 const INPUT_CLASS =
   "w-full px-3 py-2.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 focus:border-transparent";
@@ -18,29 +20,27 @@ const APPLIANCE_TYPES = [
   "other",
 ] as const;
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve((reader.result as string).split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-
 export function NewAppliance() {
   const navigate = useNavigate();
+  const { settings } = useSettings();
+  const photoStorageConfigured = settings?.imageStorage?.configured ?? false;
 
   // Sticker OCR state
   const [stickerDone, setStickerDone] = useState(false);
   const [stickerSkipped, setStickerSkipped] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrError, setOcrError] = useState("");
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [stickerFile, setStickerFile] = useState<File | null>(null);
+  const [stickerRetryable, setStickerRetryable] = useState(false);
   const stickerInputRef = useRef<HTMLInputElement>(null);
 
   // Unit photo state
-  const [unitPhotoBase64, setUnitPhotoBase64] = useState<string | null>(null);
+  const [unitPhoto, setUnitPhoto] = useState<File | null>(null);
   const [unitPhotoPreview, setUnitPhotoPreview] = useState<string | null>(null);
+  const [uploadedPhotoKey, setUploadedPhotoKey] = useState<string | null>(null);
+  const [photoProgress, setPhotoProgress] = useState(0);
+  const unitInputRef = useRef<HTMLInputElement>(null);
 
   // Form fields
   const [brand, setBrand] = useState("");
@@ -56,36 +56,71 @@ export function NewAppliance() {
 
   const showFields = stickerDone || stickerSkipped;
 
-  async function handleStickerCapture(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  useEffect(() => () => {
+    if (unitPhotoPreview) URL.revokeObjectURL(unitPhotoPreview);
+  }, [unitPhotoPreview]);
+
+  async function processSticker(file: File, alreadyPrepared = false) {
     setOcrError("");
     setOcrLoading(true);
+    setOcrProgress(0);
+    let uploadFile = file;
+    let canRetry = alreadyPrepared;
     try {
-      const base64 = await fileToBase64(file);
-      const result = await api<{ brand?: string; modelNumber?: string; serialNumber?: string; applianceType?: string }>(
+      if (!alreadyPrepared) {
+        uploadFile = await prepareImageFile(file);
+        canRetry = true;
+      }
+      setStickerFile(uploadFile);
+      const result = await apiUpload<{ brand?: string; modelNumber?: string; serialNumber?: string; applianceType?: string }>(
         "/api/appliances/ocr",
-        {
-          method: "POST",
-          body: JSON.stringify({ image: base64 }),
-        }
+        uploadFile,
+        { onProgress: setOcrProgress },
       );
       if (result.brand) setBrand(result.brand);
       if (result.modelNumber) setModel(result.modelNumber);
       if (result.serialNumber) setSerial(result.serialNumber);
       if (result.applianceType) setType(result.applianceType);
       setStickerDone(true);
+      setStickerFile(null);
+      setStickerRetryable(false);
     } catch (err: any) {
-      setOcrError(err.message || "OCR failed");
+      setStickerFile(uploadFile);
+      setStickerRetryable(canRetry && (!(err instanceof ApiError) || err.retryable !== false));
+      setOcrError(err.message || "Sticker scan failed. Tap Retry to try again");
     } finally {
       setOcrLoading(false);
       if (stickerInputRef.current) stickerInputRef.current.value = "";
     }
   }
 
+  async function handleStickerCapture(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) await processSticker(file);
+  }
+
+  async function handleUnitCapture(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoWarning("");
+    try {
+      const prepared = await prepareImageFile(file);
+      setUnitPhoto(prepared);
+      setUploadedPhotoKey(null);
+      setUnitPhotoPreview(URL.createObjectURL(prepared));
+    } catch (error) {
+      setPhotoWarning(error instanceof Error ? error.message : "Could not prepare this photo");
+    } finally {
+      if (unitInputRef.current) unitInputRef.current.value = "";
+    }
+  }
+
   function removeUnitPhoto() {
-    setUnitPhotoBase64(null);
+    setUnitPhoto(null);
+    setUploadedPhotoKey(null);
     setUnitPhotoPreview(null);
+    setPhotoProgress(0);
+    setPhotoWarning("");
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -94,22 +129,20 @@ export function NewAppliance() {
     setPhotoWarning("");
     setSubmitting(true);
 
-    let photoKey: string | undefined;
+    let photoKey = uploadedPhotoKey ?? undefined;
 
     // Try uploading unit photo
-    if (unitPhotoBase64) {
+    if (unitPhoto && !photoKey) {
       try {
-        const result = await api<{ key: string }>("/api/appliances/upload", {
-          method: "POST",
-          body: JSON.stringify({ image: unitPhotoBase64 }),
+        const result = await apiUpload<{ key: string }>("/api/appliances/upload", unitPhoto, {
+          onProgress: setPhotoProgress,
         });
         photoKey = result.key;
+        setUploadedPhotoKey(result.key);
       } catch (err: any) {
-        if (err instanceof ApiError && err.status === 503) {
-          setPhotoWarning("Photo storage not configured — appliance will be created without photo.");
-        } else {
-          setPhotoWarning("Photo upload failed — appliance will be created without photo.");
-        }
+        setPhotoWarning(err.message || "Photo upload failed. Your photo is still selected; retry or remove it");
+        setSubmitting(false);
+        return;
       }
     }
 
@@ -145,8 +178,8 @@ export function NewAppliance() {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
-        {/* Unit photo — first, but disabled until R2 is configured */}
-        <div className="opacity-50">
+        {/* Unit photo — enabled only when the backend reports configured storage */}
+        <div className={photoStorageConfigured ? "" : "opacity-50"}>
           <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Unit Photo <span className="text-xs font-normal text-gray-400 dark:text-gray-500">(optional)</span>
           </p>
@@ -165,15 +198,33 @@ export function NewAppliance() {
                 <Icon name="close" size={12} />
               </button>
             </div>
+          ) : photoStorageConfigured ? (
+            <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-pointer hover:border-gray-400 dark:hover:border-gray-500">
+              <Icon name="photo_camera" size={20} className="text-gray-500 dark:text-gray-400" />
+              <span className="text-sm text-gray-600 dark:text-gray-300">Take or choose unit photo</span>
+              <input
+                ref={unitInputRef}
+                type="file"
+                accept={IMAGE_ACCEPT}
+                capture="environment"
+                className="sr-only"
+                onChange={handleUnitCapture}
+              />
+            </label>
           ) : (
             <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 cursor-not-allowed">
               <Icon name="photo_camera" size={20} className="text-gray-400 dark:text-gray-500" />
               <span className="text-sm text-gray-400 dark:text-gray-500">Take unit photo</span>
             </div>
           )}
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
-            R2 image storage is not configured. Add R2 credentials to enable photo uploads.
-          </p>
+          {!photoStorageConfigured && (
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+              Photo storage is not configured. Add R2 credentials to enable unit photos.
+            </p>
+          )}
+          {submitting && unitPhoto && photoProgress < 100 && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">Uploading photo {photoProgress}%...</p>
+          )}
         </div>
 
         {/* Sticker OCR section */}
@@ -186,14 +237,19 @@ export function NewAppliance() {
               Take a photo of the model/serial sticker to auto-fill the fields below.
             </p>
             {ocrError && (
-              <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400">
-                {ocrError}
+              <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-700 dark:text-red-400 flex items-center justify-between gap-3">
+                <span>{ocrError}</span>
+                {stickerFile && stickerRetryable && (
+                  <button type="button" className="font-semibold underline shrink-0" onClick={() => processSticker(stickerFile, true)}>
+                    Retry
+                  </button>
+                )}
               </div>
             )}
             {ocrLoading ? (
               <div className="flex items-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400">
                 <Icon name="hourglass_top" size={18} className="animate-spin" />
-                Analyzing sticker...
+                {ocrProgress < 100 ? `Uploading ${ocrProgress}%...` : "Analyzing sticker..."}
               </div>
             ) : (
               <div>
@@ -203,7 +259,7 @@ export function NewAppliance() {
                   <input
                     ref={stickerInputRef}
                     type="file"
-                    accept="image/*"
+                    accept={IMAGE_ACCEPT}
                     capture="environment"
                     className="sr-only"
                     onChange={handleStickerCapture}
@@ -211,7 +267,11 @@ export function NewAppliance() {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setStickerSkipped(true)}
+                  onClick={() => {
+                    setStickerSkipped(true);
+                    setStickerFile(null);
+                    setOcrError("");
+                  }}
                   className="mt-2 text-xs text-gray-500 dark:text-gray-400 underline underline-offset-2"
                 >
                   Skip — enter manually
@@ -310,7 +370,13 @@ export function NewAppliance() {
             disabled={submitting}
             className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {submitting ? "Creating..." : "Create Appliance"}
+            {submitting
+              ? unitPhoto && !uploadedPhotoKey && photoProgress < 100
+                ? `Uploading photo ${photoProgress}%...`
+                : "Creating..."
+              : photoWarning && unitPhoto && !uploadedPhotoKey
+                ? "Retry Photo Upload"
+                : "Create Appliance"}
           </button>
         )}
       </form>
